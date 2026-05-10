@@ -26,6 +26,32 @@ def setup_dataset():
     print("Starting image conversion to JPG...")
     dataset_path = Path(FINAL_DATASET_NAME)
 
+    # delete the readme file
+    kaggle_readme = dataset_path / "readme.md"
+    if kaggle_readme.exists():
+        os.remove(kaggle_readme)
+        print("Removed Kaggle-specific README.md from dataset folder.")
+
+    # remove the nested folders
+    nested_path = dataset_path / "astro_dataset_maxia" / "astro_dataset_maxia"
+    
+    if nested_path.exists():
+        print("Flattening nested directory structure...")
+        # Move all items from the deep folder to the 'dataset/' folder
+        for item in nested_path.iterdir():
+            dest = dataset_path / item.name
+            # If a folder with the same name exists in root, remove it first to avoid errors
+            if dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(dest)
+                else:
+                    os.remove(dest)
+            shutil.move(str(item), str(dataset_path))
+        
+        # Remove the now empty 'astro_dataset_maxia' directory tree
+        shutil.rmtree(dataset_path / "astro_dataset_maxia")
+        print("Flattening complete.")
+
     # We use rglob to find all files in subdirectories
     for img_path in dataset_path.rglob('*'):
         if img_path.is_file() and img_path.suffix.lower() in ['.png', '.webp', '.bmp', '.tiff', '.jpeg']:
