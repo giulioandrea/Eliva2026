@@ -270,13 +270,13 @@ static void resize_bilinear(const unsigned char *src, int src_w, int src_h, floa
     }
 }
 
-int load_batch_rgb_float01(
+int load_batch(
     const Dataset *dataset, int start_index, int batch_size, 
     float *images, int *labels
 )
 {
     if (!dataset || !images || !labels) {
-        fprintf(stderr, "Error: NULL pointer passed to load_batch_rgb_float01.\n");
+        fprintf(stderr, "Error: NULL pointer passed to load_batch.\n");
         return 0;
     }
 

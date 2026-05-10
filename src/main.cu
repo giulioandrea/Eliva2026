@@ -1072,7 +1072,7 @@ int main(int argc, char **argv)
         for (int batch = 0; batch < trainBatches; batch++) {
             int startIndex = batch * BATCH_SIZE;
 
-            int loaded = load_batch_rgb_float01(
+            int loaded = load_batch(
                 &train,
                 startIndex,
                 BATCH_SIZE,
@@ -1173,7 +1173,7 @@ int main(int argc, char **argv)
         for (int batch = 0; batch < validationBatches; batch++) {
             int startIndex = batch * BATCH_SIZE;
 
-            int loaded = load_batch_rgb_float01(
+            int loaded = load_batch(
                 &validation,
                 startIndex,
                 BATCH_SIZE,

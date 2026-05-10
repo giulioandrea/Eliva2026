@@ -28,7 +28,7 @@ extern const char *ASTRO_CLASS_NAMES[NUM_CLASSES];
 
 int load_dataset_index(Dataset *dataset, const char *root_dir);
 
-int load_batch_rgb_float01(
+int load_batch(
     const Dataset *dataset, int start_index, int batch_size, 
     float *images, int *labels
 );
