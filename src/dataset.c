@@ -1,4 +1,4 @@
-#include "read_dataset.h"
+#include "dataset.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -329,6 +329,19 @@ void free_dataset(Dataset *dataset)
     dataset->samples = NULL;
     dataset->count = 0;
     dataset->capacity = 0;
+}
+
+void shuffle_dataset(Dataset *dataset)
+{
+    if (!dataset || dataset->count <= 1) return;
+
+    for (int i = dataset->count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+
+        Sample tmp = dataset->samples[i];
+        dataset->samples[i] = dataset->samples[j];
+        dataset->samples[j] = tmp;
+    }
 }
 
 void print_dataset_info(const Dataset *dataset)

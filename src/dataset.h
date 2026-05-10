@@ -1,5 +1,5 @@
-#ifndef READ_DATASET_H
-#define READ_DATASET_H
+#ifndef DATASET_H
+#define DATASET_H
 
 #define NUM_CLASSES    12
 #define IMAGE_WIDTH    64
@@ -34,6 +34,11 @@ int load_batch_rgb_float01(
 );
 
 void free_dataset(Dataset *dataset);
+
+// Shuffle dataset samples in-place using Fisher-Yates algorithm.
+// Requires a call to srand()
+void shuffle_dataset(Dataset *dataset);
+
 void print_dataset_info(const Dataset *dataset);
 
 #ifdef __cplusplus
