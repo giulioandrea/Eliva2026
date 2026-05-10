@@ -1,0 +1,33 @@
+NVCC = nvcc
+CC   = gcc
+
+TARGET = main
+
+CUDA_SRC = src/main.cu
+C_SRC    = src/read_dataset.c
+
+CUDA_OBJ = main.o
+C_OBJ    = read_dataset.o
+
+OBJS = $(CUDA_OBJ) $(C_OBJ)
+
+NVCCFLAGS = -O2 -g -G
+CFLAGS    = -O2 -g -Wall -Wextra
+
+all : $(TARGET)
+
+$(TARGET) : $(OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^
+
+main.o: main.cu read_dataset.h
+	$(NVCC) $(NVCCFLAGS) -c main.cu -o main.o
+
+
+
+read_:set.o read_mnist.c read_mnist.h
+	$(CC) $(CFLAGS) -c read_mnist.c -o read_mnist.o
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+
+rebuild: clean all
