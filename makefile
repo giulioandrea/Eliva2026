@@ -7,10 +7,10 @@ SRC_DIR = src
 OBJ_DIR = bin
 
 CUDA_SRC = $(SRC_DIR)/main.cu
-C_SRC    = $(SRC_DIR)/read_dataset.c
+C_SRC    = $(SRC_DIR)/dataset.c
 
 CUDA_OBJ = $(OBJ_DIR)/main.o
-C_OBJ    = $(OBJ_DIR)/read_dataset.o
+C_OBJ    = $(OBJ_DIR)/dataset.o
 
 OBJS = $(CUDA_OBJ) $(C_OBJ)
 
@@ -28,10 +28,10 @@ $(TARGET): $(OBJS)
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-$(CUDA_OBJ): $(CUDA_SRC) $(SRC_DIR)/read_dataset.h | $(OBJ_DIR)
+$(CUDA_OBJ): $(CUDA_SRC) $(SRC_DIR)/dataset.h | $(OBJ_DIR)
 	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
 
-$(C_OBJ): $(C_SRC) $(SRC_DIR)/read_dataset.h | $(OBJ_DIR)
+$(C_OBJ): $(C_SRC) $(SRC_DIR)/dataset.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:

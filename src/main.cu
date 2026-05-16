@@ -874,20 +874,6 @@ void trainBatch(
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
-// Shuffle dataset samples in-place using Fisher-Yates algorithm
-static void shuffle_dataset(Dataset *dataset)
-{
-    if (!dataset || dataset->count <= 1) return;
-
-    for (int i = dataset->count - 1; i > 0; i--) {
-        int j = rand() % (i + 1);
-
-        Sample tmp = dataset->samples[i];
-        dataset->samples[i] = dataset->samples[j];
-        dataset->samples[j] = tmp;
-    }
-}
-
 // Compute average cross-entropy loss for a batch
 static float compute_batch_loss(
     float *d_softmax_output,
