@@ -261,6 +261,16 @@ __global__ void crossEntropyLossKernel(float *predictions, int *labels, float *l
     }
 }
 
+// Ridge Regularization (L2) loss for weights
+__global__ void ridgeL2GradientKernel(float *dW, float *W, int size, float lambda)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < size) {
+        dW[idx] += lambda * W[idx];
+    }
+}
+
 // Combined kernel for softmax and cross-entropy loss (more numerically stable)
 __global__ void softmaxCrossEntropyKernel(
     const float *softmax_output, const int *labels, float * d_logits,
@@ -738,7 +748,7 @@ void trainBatch(
     float *d_softmax_output, int *d_predictions, float *d_d_logits,
     float *d_d_fc_weights, float *d_d_fc_bias, float *d_d_pooling_output,
     float *d_d_activation, float *d_d_conv_output, float *d_d_kernels,
-    float learningRate
+    float learningRate, float lambda
 )
 {
     float timing[5] = {0.0f};
@@ -810,8 +820,12 @@ void trainBatch(
 
     // ReLU backward
     int reluGrid = (convTotalElements + blockSize - 1) / blockSize;
+
     reluBackwardKernel<<<reluGrid, blockSize>>>(
-        d_activation, d_d_activation, d_d_conv_output, convTotalElements
+        d_conv_output,      // pre-ReLU values
+        d_d_activation,
+        d_d_conv_output,
+        convTotalElements
     );
     CHECK_KERNEL_LAUNCH();
 
@@ -829,6 +843,11 @@ void trainBatch(
     int fcWeights = FLATTEN_SIZE * NUM_CLASSES;
     int fcUpdateGrid = (fcWeights + blockSize - 1) / blockSize;
 
+    ridgeL2GradientKernel<<<fcUpdateGrid, blockSize>>>(
+        d_d_fc_weights, d_fc_weights, fcWeights, lambda
+    );
+    CHECK_KERNEL_LAUNCH();
+
     sgdUpdateKernel<<<fcUpdateGrid, blockSize>>>(
         d_fc_weights, d_d_fc_weights, learningRate, fcWeights
     );
@@ -841,12 +860,32 @@ void trainBatch(
     CHECK_KERNEL_LAUNCH();
 
     int convWeightGrid = (convWeight + blockSize - 1) / blockSize;
+
+    ridgeL2GradientKernel<<<convWeightGrid, blockSize>>>(
+        d_d_kernels, d_kernels, convWeight, lambda
+    );
+    CHECK_KERNEL_LAUNCH();
+
     sgdUpdateKernel<<<convWeightGrid, blockSize>>>(
         d_kernels, d_d_kernels, learningRate, convWeight
     );
     CHECK_KERNEL_LAUNCH();
 
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+// Shuffle dataset samples in-place using Fisher-Yates algorithm
+static void shuffle_dataset(Dataset *dataset)
+{
+    if (!dataset || dataset->count <= 1) return;
+
+    for (int i = dataset->count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+
+        Sample tmp = dataset->samples[i];
+        dataset->samples[i] = dataset->samples[j];
+        dataset->samples[j] = tmp;
+    }
 }
 
 // Compute average cross-entropy loss for a batch
@@ -1061,6 +1100,8 @@ int main(int argc, char **argv)
     ));
 
     const float learningRate = 0.001f;
+    // PROVISIONAL RIDGE REGULATION LAMBDA - READ FROM DATASET OR CONFIG
+    const float lambda = 1e-4f;
 
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
         shuffle_dataset(&train);
@@ -1117,7 +1158,8 @@ int main(int argc, char **argv)
                 d_d_activation,
                 d_d_conv_output,
                 d_d_kernels,
-                learningRate
+                learningRate,
+                lambda
             );
 
             float batchLoss = compute_batch_loss(

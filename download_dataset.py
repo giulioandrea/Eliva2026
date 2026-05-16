@@ -54,7 +54,7 @@ def setup_dataset():
 
     # We use rglob to find all files in subdirectories
     for img_path in dataset_path.rglob('*'):
-        if img_path.is_file() and img_path.suffix.lower() in ['.png', '.webp', '.bmp', '.tiff', '.jpeg']:
+        if img_path.is_file() and img_path.suffix.lower() in ['.png', '.webp', '.bmp', '.tif', '.tiff', '.jpeg', '.jpg']:
             try:
                 # Open image
                 with Image.open(img_path) as img:
