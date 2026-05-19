@@ -46,7 +46,7 @@
 #define POOL_OUTPUT_SIZE POOL_OUTPUT_H
 
 #define NUM_CLASSES 12
-#define EPOCHS 10
+#define EPOCHS 50
 #define FIXED_SEED 123
 
 // Error detection MACRO
@@ -88,7 +88,7 @@ void initializeFullyConnected(float *weights, float *bias)
 
     for (int i = 0; i < FLATTEN_SIZE * NUM_CLASSES; i++)
         weights[i] = (2.0f * (float)rand() / RAND_MAX - 1.0f) * scale;
-    
+
     for (int i = 0; i < NUM_CLASSES; i++) bias[i] = 0.0f;
 }
 
@@ -324,7 +324,7 @@ float calculateAccuracy(int *predictions, int *labels, int batch_size) {
 
 // Forward pass
 void forwardCNN(
-    float *d_input, float *d_kernels, float *d_conv_output, 
+    float *d_input, float *d_kernels, float *d_conv_output,
     float *d_activation, float *d_pooling_output, float *timing
 )
 {
@@ -409,7 +409,7 @@ void forwardCNNClassifier(
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-    
+
     // Convolution
     dim3 convBlockDim(8,8);
     dim3 convGridDim(
@@ -422,7 +422,7 @@ void forwardCNNClassifier(
     int tileSizeWithPadding = tileSize + KERNEL_SIZE - 1;
     int sharedMemSize = INPUT_CHANNELS * tileSizeWithPadding * tileSizeWithPadding * sizeof(float);
     cudaEventRecord(start);
-    
+
     convolutionSharedKernel<<<convGridDim, convBlockDim, sharedMemSize>>>(
         d_input, d_kernels, d_conv_output, BATCH_SIZE, INPUT_CHANNELS,
         INPUT_SIZE, KERNEL_SIZE, KERNEL_COUNT, OUTPUT_SIZE,
@@ -432,7 +432,7 @@ void forwardCNNClassifier(
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&timing[0], start, stop);
-    
+
     // Relu
     int convTotalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
     cudaMemcpy(d_activation, d_conv_output, convTotalElements * sizeof(float), cudaMemcpyDeviceToDevice);
@@ -917,7 +917,7 @@ int main(int argc, char **argv)
     // unsigned char buffer[16];
     // getrandom(buffer, sizeof(buffer), 0);
     // srand(*(unsigned int *)buffer);
-    
+
     // Comment out to ensure reproducibility for testing and benchmarking
     srand(FIXED_SEED);
 
@@ -1086,7 +1086,6 @@ int main(int argc, char **argv)
     ));
 
     const float learningRate = 0.001f;
-    // PROVISIONAL RIDGE REGULATION LAMBDA - READ FROM DATASET OR CONFIG
     const float lambda = 1e-4f;
 
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
