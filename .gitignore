@@ -1,2 +1,4 @@
 *.jpg
+*.png
 kaggle.json
+cifar10_raw
