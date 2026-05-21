@@ -1,7 +1,7 @@
 #ifndef DATASET_H
 #define DATASET_H
 
-#define NUM_CLASSES    12
+#define NUM_CLASSES    10
 #define IMAGE_WIDTH    64
 #define IMAGE_HEIGHT   64
 #define IMAGE_CHANNELS 3
@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 // Deferred to read_dataset.o linking
-extern const char *ASTRO_CLASS_NAMES[NUM_CLASSES];
+extern const char *CIFAR_CLASS_NAMES[NUM_CLASSES];
 
 int load_dataset_index(Dataset *dataset, const char *root_dir);
 

@@ -45,8 +45,7 @@
 #define OUTPUT_SIZE OUTPUT_H
 #define POOL_OUTPUT_SIZE POOL_OUTPUT_H
 
-#define NUM_CLASSES 12
-#define EPOCHS 50
+#define EPOCHS 10
 #define FIXED_SEED 123
 
 // Error detection MACRO
@@ -924,21 +923,21 @@ int main(int argc, char **argv)
     const char *datasetRoot = (argc > 1) ? argv[1] : "dataset";
 
     char trainPath[4096];
-    char validationPath[4096];
+    char testPath[4096];
 
-    snprintf(trainPath, sizeof(trainPath), "%s/training", datasetRoot);
-    snprintf(validationPath, sizeof(validationPath), "%s/validation", datasetRoot);
+    snprintf(trainPath, sizeof(trainPath), "%s/train", datasetRoot);
+    snprintf(testPath, sizeof(testPath), "%s/test", datasetRoot);
 
     Dataset train;
-    Dataset validation;
+    Dataset test;
 
     if (!load_dataset_index(&train, trainPath)) {
         fprintf(stderr, "Failed to load training dataset from '%s'.\n", trainPath);
         return EXIT_FAILURE;
     }
 
-    if (!load_dataset_index(&validation, validationPath)) {
-        fprintf(stderr, "Failed to load validation dataset from '%s'.\n", validationPath);
+    if (!load_dataset_index(&test, testPath)) {
+        fprintf(stderr, "Failed to load test dataset from '%s'.\n", testPath);
         free_dataset(&train);
         return EXIT_FAILURE;
     }
@@ -946,16 +945,16 @@ int main(int argc, char **argv)
     printf("\nTRAIN DATASET\n");
     print_dataset_info(&train);
 
-    printf("\nVALIDATION DATASET\n");
-    print_dataset_info(&validation);
+    printf("\nTEST DATASET\n");
+    print_dataset_info(&test);
 
     int trainBatches = train.count / BATCH_SIZE;
-    int validationBatches = validation.count / BATCH_SIZE;
+    int testBatches = test.count / BATCH_SIZE;
 
     if (trainBatches <= 0) {
         fprintf(stderr, "Training dataset too small for BATCH_SIZE=%d.\n", BATCH_SIZE);
         free_dataset(&train);
-        free_dataset(&validation);
+        free_dataset(&test);
         return EXIT_FAILURE;
     }
 
@@ -1008,7 +1007,7 @@ int main(int argc, char **argv)
         free(h_fc_bias);
 
         free_dataset(&train);
-        free_dataset(&validation);
+        free_dataset(&test);
 
         return EXIT_FAILURE;
     }
@@ -1193,15 +1192,15 @@ int main(int argc, char **argv)
             avgTrainAccuracy = trainAccuracySum / (float)usedTrainBatches;
         }
 
-        float validationLossSum = 0.0f;
-        float validationAccuracySum = 0.0f;
-        int usedValidationBatches = 0;
+        float testLossSum = 0.0f;
+        float testAccuracySum = 0.0f;
+        int usedTestBatches = 0;
 
-        for (int batch = 0; batch < validationBatches; batch++) {
+        for (int batch = 0; batch < testBatches; batch++) {
             int startIndex = batch * BATCH_SIZE;
 
             int loaded = load_batch(
-                &validation,
+                &test,
                 startIndex,
                 BATCH_SIZE,
                 h_input,
@@ -1265,33 +1264,33 @@ int main(int argc, char **argv)
                 BATCH_SIZE
             );
 
-            validationLossSum += batchLoss;
-            validationAccuracySum += batchAccuracy;
-            usedValidationBatches++;
+            testLossSum += batchLoss;
+            testAccuracySum += batchAccuracy;
+            usedTestBatches++;
         }
 
-        float avgValidationLoss = 0.0f;
-        float avgValidationAccuracy = 0.0f;
+        float avgTestLoss = 0.0f;
+        float avgTestAccuracy = 0.0f;
 
-        if (usedValidationBatches > 0) {
-            avgValidationLoss = validationLossSum / (float)usedValidationBatches;
-            avgValidationAccuracy = validationAccuracySum / (float)usedValidationBatches;
+        if (usedTestBatches > 0) {
+            avgTestLoss = testLossSum / (float)usedTestBatches;
+            avgTestAccuracy = testAccuracySum / (float)usedTestBatches;
         }
 
         printf(
             "\nEpoch %d/%d completed | "
             "Train loss %.4f | Train acc %.4f | Used train batches %d/%d | "
-            "Val loss %.4f | Val acc %.4f | Used val batches %d/%d\n\n",
+            "Test loss %.4f | Test acc %.4f | Used test batches %d/%d\n\n",
             epoch + 1,
             EPOCHS,
             avgTrainLoss,
             avgTrainAccuracy,
             usedTrainBatches,
             trainBatches,
-            avgValidationLoss,
-            avgValidationAccuracy,
-            usedValidationBatches,
-            validationBatches
+            avgTestLoss,
+            avgTestAccuracy,
+            usedTestBatches,
+            testBatches
         );
     }
 
@@ -1329,7 +1328,7 @@ int main(int argc, char **argv)
     free(h_fc_bias);
 
     free_dataset(&train);
-    free_dataset(&validation);
+    free_dataset(&test);
 
     return EXIT_SUCCESS;
 }

@@ -19,20 +19,18 @@ do { \
     } \
 } while (0)
 
-const char *ASTRO_CLASS_NAMES[NUM_CLASSES] =
+const char *CIFAR_CLASS_NAMES[NUM_CLASSES] =
 {
-    "asteroid",
-    "black_hole",
-    "earth",
-    "galaxy",
-    "jupiter",
-    "mars",
-    "mercury",
-    "neptune",
-    "pluto",
-    "saturn",
-    "uranus",
-    "venus"
+    "airplane",
+    "automobile",
+    "bird",
+    "cat",
+    "deer",
+    "dog",
+    "frog",
+    "horse",
+    "ship",
+    "truck"
 };
 
 static int is_directory(const char *path)
@@ -198,7 +196,7 @@ int load_dataset_index(Dataset *dataset, const char *root_dir)
 
     // Labels are subfolders in dataset directory, each named after the class
     for (int label = 0; label < NUM_CLASSES; label++) {
-        if (!load_class_directory(dataset, root_dir, ASTRO_CLASS_NAMES[label], label)) return 0;
+        if (!load_class_directory(dataset, root_dir, CIFAR_CLASS_NAMES[label], label)) return 0;
     }
 
     return 1;
@@ -357,5 +355,5 @@ void print_dataset_info(const Dataset *dataset)
 
     printf("Dataset contains %d samples:\n", dataset->count);
     for (int i = 0; i < NUM_CLASSES; i++)
-        printf("Class %2d (%s): %d samples\n", i, ASTRO_CLASS_NAMES[i], counts[i]);
+        printf("Class %2d (%s): %d samples\n", i, CIFAR_CLASS_NAMES[i], counts[i]);
 }
