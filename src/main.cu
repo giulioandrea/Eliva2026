@@ -20,7 +20,7 @@
 #define STRIDE_Y 1
 #define STRIDE_X 1
 
-#define BATCH_SIZE 32
+#define BATCH_SIZE 16
 
 #define OUTPUT_H ((INPUT_H + 2 * PADDING_Y - KERNEL_H) / STRIDE_Y + 1)
 #define OUTPUT_W ((INPUT_W + 2 * PADDING_X - KERNEL_W) / STRIDE_X + 1)
@@ -47,6 +47,7 @@
 
 #define EPOCHS 10
 #define FIXED_SEED 123
+#define TILE_SIZE 32
 
 // Error detection MACRO
 #define CHECK_CUDA_ERROR(call) \
@@ -165,15 +166,49 @@ __global__ void convolutionSharedKernel(
     }
 }
 
-// Simple matrix multiplication without memory tiling
-__global__ void matrixMultiplyKernel(float *A, float *B, float *C, int A_rows, int A_cols, int B_cols)
+// Matrix multiplication using shared-memory tiling
+__global__ void matrixMultiplySharedKernel(
+    const float *A, const float *B, float *C,
+    int A_rows, int A_cols, int B_cols
+)
 {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ float sA[TILE_SIZE][TILE_SIZE];
+    __shared__ float sB[TILE_SIZE][TILE_SIZE];
+
+    int row = blockIdx.y * TILE_SIZE + threadIdx.y;
+    int col = blockIdx.x * TILE_SIZE + threadIdx.x;
+
+    float sum = 0.0f;
+    int numTiles = (A_cols + TILE_SIZE - 1) / TILE_SIZE;
+
+    for (int tile = 0; tile < numTiles; tile++) {
+        int aCol = tile * TILE_SIZE + threadIdx.x;
+        int bRow = tile * TILE_SIZE + threadIdx.y;
+
+        if (row < A_rows && aCol < A_cols) {
+            sA[threadIdx.y][threadIdx.x] = A[row * A_cols + aCol];
+        } else {
+            sA[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+
+        if (bRow < A_cols && col < B_cols) {
+            sB[threadIdx.y][threadIdx.x] = B[bRow * B_cols + col];
+        } else {
+            sB[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_SIZE; k++) {
+            sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+        }
+
+        // Prevent any thread from overwriting the shared tile for the next
+        // phase while other threads are still using the current tile.
+        __syncthreads();
+    }
 
     if (row < A_rows && col < B_cols) {
-        float sum = 0.0f;
-        for (int k = 0; k < A_cols; k++) sum += A[row * A_cols + k] * B[k * B_cols + col];
         C[row * B_cols + col] = sum;
     }
 }
@@ -467,19 +502,20 @@ void forwardCNNClassifier(
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&timing[2], start, stop);
 
-    // Fully connected classification
-    dim3 mmBlockDim(16, 16);
+    // Fully connected classification: logits = pooling_output * fc_weights.
+    dim3 mmBlockDim(TILE_SIZE, TILE_SIZE);
     dim3 mmGridDim(
-        (NUM_CLASSES + mmBlockDim.x - 1) / mmBlockDim.x,
-        (BATCH_SIZE + mmBlockDim.y - 1) / mmBlockDim.y
+        (NUM_CLASSES + TILE_SIZE - 1) / TILE_SIZE,
+        (BATCH_SIZE + TILE_SIZE - 1) / TILE_SIZE
     );
 
     cudaEventRecord(start);
 
-    matrixMultiplyKernel<<<mmGridDim, mmBlockDim>>>(
-        d_pooling_output, d_fc_weights, d_logits, BATCH_SIZE,
-        FLATTEN_SIZE, NUM_CLASSES
+    matrixMultiplySharedKernel<<<mmGridDim, mmBlockDim>>>(
+        d_pooling_output, d_fc_weights, d_logits,
+        BATCH_SIZE, FLATTEN_SIZE, NUM_CLASSES
     );
+    CHECK_KERNEL_LAUNCH();
 
     // Add bias
     dim3 biasBlockDim(16, 16);
@@ -491,6 +527,7 @@ void forwardCNNClassifier(
     addBiasKernel<<<biasGridDim, biasBlockDim>>>(
         d_logits, d_fc_bias, BATCH_SIZE, NUM_CLASSES
     );
+    CHECK_KERNEL_LAUNCH();
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
