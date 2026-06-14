@@ -2,3 +2,5 @@
 *.png
 kaggle.json
 cifar10_raw
+bin/
+build/
