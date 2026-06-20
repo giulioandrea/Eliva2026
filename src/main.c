@@ -4,14 +4,15 @@
 #include "dataset.h"
 #include "kernels.h"
 
+#include "elements.h"
+#include "lenet.h"
+
 int main(int argc, char **argv) {
 	// Uncomment to use getrandom for better randomness in shuffling
 	// unsigned char buffer[16];
 	// getrandom(buffer, sizeof(buffer), 0);
-	// srand(*(unsigned int *)buffer);
-
-	// Comment out to ensure reproducibility for testing and benchmarking
-	srand(FIXED_SEED);
+	// unsigned int seed = (*(unsigned int *)buffer);
+	unsigned int seed = FIXED_SEED;
 
 	const char *datasetRoot = (argc > 1) ? argv[1] : "dataset";
 
@@ -60,38 +61,18 @@ int main(int argc, char **argv) {
 	printf("Batch size:   %d\n", BATCH_SIZE);
 	printf("Epochs:       %d\n\n", EPOCHS);
 
-	const int inputElements = BATCH_SIZE * INPUT_CHANNELS * INPUT_H * INPUT_W;
-
-	const int convElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_H * OUTPUT_W;
-
-	const int poolElements = BATCH_SIZE * KERNEL_COUNT * POOL_OUTPUT_H * POOL_OUTPUT_W;
-
-	const int logitsElements = BATCH_SIZE * NUM_CLASSES;
-
-	const int kernelElements = KERNEL_COUNT * INPUT_CHANNELS * KERNEL_H * KERNEL_W;
-
-	const int fcWeightElements = FLATTEN_SIZE * NUM_CLASSES;
-
 	float *h_input = (float *)malloc((size_t)inputElements * sizeof(float));
 	int *h_labels = (int *)malloc((size_t)BATCH_SIZE * sizeof(int));
 	int *h_predictions = (int *)malloc((size_t)BATCH_SIZE * sizeof(int));
 	float *h_loss = (float *)malloc((size_t)BATCH_SIZE * sizeof(float));
 
-	float *h_kernels = (float *)malloc((size_t)kernelElements * sizeof(float));
-	float *h_fc_weights = (float *)malloc((size_t)fcWeightElements * sizeof(float));
-	float *h_fc_bias = (float *)malloc((size_t)NUM_CLASSES * sizeof(float));
-
-	if (!h_input || !h_labels || !h_predictions || !h_loss || !h_kernels || !h_fc_weights ||
-		!h_fc_bias) {
+	if (!h_input || !h_labels || !h_predictions || !h_loss) {
 		fprintf(stderr, "Host malloc failed.\n");
 
 		free(h_input);
 		free(h_labels);
 		free(h_predictions);
 		free(h_loss);
-		free(h_kernels);
-		free(h_fc_weights);
-		free(h_fc_bias);
 
 		free_dataset(&train);
 		free_dataset(&test);
@@ -99,68 +80,15 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	initializeKernels(h_kernels);
-	initializeFullyConnected(h_fc_weights, h_fc_bias);
-
 	float *d_input = NULL;
 	int *d_labels = NULL;
-
-	float *d_kernels = NULL;
-	float *d_conv_output = NULL;
-	float *d_activation = NULL;
-	float *d_pooling_output = NULL;
-
-	float *d_fc_weights = NULL;
-	float *d_fc_bias = NULL;
-	float *d_logits = NULL;
-	float *d_softmax_output = NULL;
-	int *d_predictions = NULL;
-
-	float *d_d_logits = NULL;
-	float *d_d_fc_weights = NULL;
-	float *d_d_fc_bias = NULL;
-	float *d_d_pooling_output = NULL;
-	float *d_d_activation = NULL;
-	float *d_d_conv_output = NULL;
-	float *d_d_kernels = NULL;
-
 	float *d_loss = NULL;
 
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_input, (size_t)inputElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_labels, (size_t)BATCH_SIZE * sizeof(int)));
+	CHECK_CUDA_ERROR(cudaMalloc(&d_input, (size_t)inputElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&d_labels, (size_t)BATCH_SIZE * sizeof(int)));
+	CHECK_CUDA_ERROR(cudaMalloc(&d_loss, (size_t)BATCH_SIZE * sizeof(float)));
 
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_kernels, (size_t)kernelElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_conv_output, (size_t)convElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_activation, (size_t)convElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_pooling_output, (size_t)poolElements * sizeof(float)));
-
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_fc_weights, (size_t)fcWeightElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_fc_bias, (size_t)NUM_CLASSES * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_logits, (size_t)logitsElements * sizeof(float)));
-	CHECK_CUDA_ERROR(
-		cudaMalloc((void **)&d_softmax_output, (size_t)logitsElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_predictions, (size_t)BATCH_SIZE * sizeof(int)));
-
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_d_logits, (size_t)logitsElements * sizeof(float)));
-	CHECK_CUDA_ERROR(
-		cudaMalloc((void **)&d_d_fc_weights, (size_t)fcWeightElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_d_fc_bias, (size_t)NUM_CLASSES * sizeof(float)));
-	CHECK_CUDA_ERROR(
-		cudaMalloc((void **)&d_d_pooling_output, (size_t)poolElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_d_activation, (size_t)convElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_d_conv_output, (size_t)convElements * sizeof(float)));
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_d_kernels, (size_t)kernelElements * sizeof(float)));
-
-	CHECK_CUDA_ERROR(cudaMalloc((void **)&d_loss, (size_t)BATCH_SIZE * sizeof(float)));
-
-	CHECK_CUDA_ERROR(cudaMemcpy(d_kernels, h_kernels, (size_t)kernelElements * sizeof(float),
-								cudaMemcpyHostToDevice));
-
-	CHECK_CUDA_ERROR(cudaMemcpy(d_fc_weights, h_fc_weights,
-								(size_t)fcWeightElements * sizeof(float), cudaMemcpyHostToDevice));
-
-	CHECK_CUDA_ERROR(cudaMemcpy(d_fc_bias, h_fc_bias, (size_t)NUM_CLASSES * sizeof(float),
-								cudaMemcpyHostToDevice));
+	LeNet *cnn = LeNet_init(seed);
 
 	const float learningRate = 0.001f;
 	const float lambda = 1e-4f;
@@ -187,15 +115,18 @@ int main(int argc, char **argv) {
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
 										cudaMemcpyHostToDevice));
 
-			trainBatch(d_input, d_labels, d_kernels, d_conv_output, d_activation, d_pooling_output,
-					   d_fc_weights, d_fc_bias, d_logits, d_softmax_output, d_predictions,
-					   d_d_logits, d_d_fc_weights, d_d_fc_bias, d_d_pooling_output, d_d_activation,
-					   d_d_conv_output, d_d_kernels, learningRate, lambda);
+			float timing[5] = {
+				0.0f}; // TODO: this is just temporary, and needs work (possible seg-fault)
+
+			LeNet_forward(d_input, d_labels, cnn, timing);
+			LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, timing);
+
+			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 			float batchLoss =
-				compute_batch_loss(d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
+				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
-			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, d_predictions,
+			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
 										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
@@ -237,18 +168,17 @@ int main(int argc, char **argv) {
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
 										cudaMemcpyHostToDevice));
 
-			float timing[5] = {0.0f};
+			float timing[5] = {
+				0.0f}; // TODO: this is just temporary, and needs work (possible seg-fault)
 
-			forwardCNNClassifier(d_input, d_kernels, d_conv_output, d_activation, d_pooling_output,
-								 d_fc_weights, d_fc_bias, d_logits, d_softmax_output, d_predictions,
-								 timing);
+			LeNet_forward(d_input, d_labels, cnn, timing);
 
 			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
 			float batchLoss =
-				compute_batch_loss(d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
+				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
-			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, d_predictions,
+			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
 										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
@@ -275,26 +205,6 @@ int main(int argc, char **argv) {
 
 	cudaFree(d_input);
 	cudaFree(d_labels);
-
-	cudaFree(d_kernels);
-	cudaFree(d_conv_output);
-	cudaFree(d_activation);
-	cudaFree(d_pooling_output);
-
-	cudaFree(d_fc_weights);
-	cudaFree(d_fc_bias);
-	cudaFree(d_logits);
-	cudaFree(d_softmax_output);
-	cudaFree(d_predictions);
-
-	cudaFree(d_d_logits);
-	cudaFree(d_d_fc_weights);
-	cudaFree(d_d_fc_bias);
-	cudaFree(d_d_pooling_output);
-	cudaFree(d_d_activation);
-	cudaFree(d_d_conv_output);
-	cudaFree(d_d_kernels);
-
 	cudaFree(d_loss);
 
 	free(h_input);
@@ -302,9 +212,7 @@ int main(int argc, char **argv) {
 	free(h_predictions);
 	free(h_loss);
 
-	free(h_kernels);
-	free(h_fc_weights);
-	free(h_fc_bias);
+	LeNet_free(cnn);
 
 	free_dataset(&train);
 	free_dataset(&test);

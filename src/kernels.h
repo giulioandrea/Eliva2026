@@ -59,6 +59,10 @@
 #define FIXED_SEED 123
 #define TILE_SIZE 32
 
+void initializeKernels(float *kernels);
+
+void initializeFullyConnected(float *weights, float *bias);
+
 __global__ void convolutionSharedKernel(float *input, float *kernels, float *output, int batchSize,
 										int inputChannels, int inputSize, int kernelSize,
 										int kernelCount, int outputSize, int padding, int stride);
@@ -107,5 +111,10 @@ __global__ void conv2WeightGradientReduceKernel(const float *input, const float 
 __global__ void ridgeL2GradientKernel(float *dW, float *W, int size, float lambda);
 
 __global__ void sgdUpdateKernel(float *params, const float *grads, float learningRate, int size);
+
+float calculateAccuracy(int *predictions, int *labels, int batch_size);
+
+float compute_batch_loss(float *d_softmax_output, int *d_labels, float *d_loss, float *h_loss,
+						 int batchSize);
 
 #endif // !KERNELS_H

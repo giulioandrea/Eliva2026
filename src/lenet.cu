@@ -1,4 +1,7 @@
+#include "elements.h"
 #include "kernels.h"
+#include "lenet.h"
+#include <cstdlib>
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,26 +66,82 @@ void forwardCNN(float *d_input, float *d_kernels, float *d_conv_output, float *d
 }
 */
 
-typedef struct {
-	float *d_kernels;
-	float *d_conv_output;
-	float *d_activation;
-	float *d_pooling_output;
-	float *d_fc_weights;
-	float *d_fc_bias;
-	float *d_logits;
-	float *d_softmax_output;
-	int *d_predictions;
-	float *d_d_logits;
-	float *d_d_fc_weights;
-	float *d_d_fc_bias;
-	float *d_d_pooling_output;
-	float *d_d_activation;
-	float *d_d_conv_output;
-	float *d_d_kernels;
-} CNNclassifier;
+LeNet *LeNet_init(unsigned int seed) {
+	LeNet *cnn = (LeNet *)malloc(sizeof(LeNet));
 
-void forwardCNNClassifier(float *d_input, int *d_labels, CNNclassifier *cnn, float *timing) {
+	float *h_kernels = (float *)malloc((size_t)kernelElements * sizeof(float));
+	float *h_fc_weights = (float *)malloc((size_t)fcWeightElements * sizeof(float));
+	float *h_fc_bias = (float *)malloc((size_t)NUM_CLASSES * sizeof(float));
+
+	if (!h_kernels || !h_fc_weights || !h_fc_bias) {
+		fprintf(stderr, "Host malloc failed.\n");
+		exit(EXIT_FAILURE);
+	}
+
+	srand(seed);
+
+	initializeKernels(h_kernels);
+	initializeFullyConnected(h_fc_weights, h_fc_bias);
+
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_kernels, (size_t)kernelElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_conv_output, (size_t)convElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_activation, (size_t)convElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_pooling_output, (size_t)poolElements * sizeof(float)));
+
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_fc_weights, (size_t)fcWeightElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_fc_bias, (size_t)NUM_CLASSES * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_logits, (size_t)logitsElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_softmax_output, (size_t)logitsElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_predictions, (size_t)BATCH_SIZE * sizeof(int)));
+
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_logits, (size_t)logitsElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_fc_weights, (size_t)fcWeightElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_fc_bias, (size_t)NUM_CLASSES * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_pooling_output, (size_t)poolElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_activation, (size_t)convElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_conv_output, (size_t)convElements * sizeof(float)));
+	CHECK_CUDA_ERROR(cudaMalloc(&cnn->d_d_kernels, (size_t)kernelElements * sizeof(float)));
+
+	CHECK_CUDA_ERROR(cudaMemcpy(cnn->d_kernels, h_kernels, (size_t)kernelElements * sizeof(float),
+								cudaMemcpyHostToDevice));
+
+	CHECK_CUDA_ERROR(cudaMemcpy(cnn->d_fc_weights, h_fc_weights,
+								(size_t)fcWeightElements * sizeof(float), cudaMemcpyHostToDevice));
+
+	CHECK_CUDA_ERROR(cudaMemcpy(cnn->d_fc_bias, h_fc_bias, (size_t)NUM_CLASSES * sizeof(float),
+								cudaMemcpyHostToDevice));
+
+	free(h_kernels);
+	free(h_fc_weights);
+	free(h_fc_bias);
+
+	return cnn;
+}
+
+void LeNet_free(LeNet *cnn) {
+	cudaFree(cnn->d_kernels);
+	cudaFree(cnn->d_conv_output);
+	cudaFree(cnn->d_activation);
+	cudaFree(cnn->d_pooling_output);
+
+	cudaFree(cnn->d_fc_weights);
+	cudaFree(cnn->d_fc_bias);
+	cudaFree(cnn->d_logits);
+	cudaFree(cnn->d_softmax_output);
+	cudaFree(cnn->d_predictions);
+
+	cudaFree(cnn->d_d_logits);
+	cudaFree(cnn->d_d_fc_weights);
+	cudaFree(cnn->d_d_fc_bias);
+	cudaFree(cnn->d_d_pooling_output);
+	cudaFree(cnn->d_d_activation);
+	cudaFree(cnn->d_d_conv_output);
+	cudaFree(cnn->d_d_kernels);
+
+	free(cnn);
+}
+
+void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 	cudaEvent_t start, stop;
 	cudaEventCreate(&start);
 	cudaEventCreate(&stop);
@@ -184,8 +243,8 @@ void forwardCNNClassifier(float *d_input, int *d_labels, CNNclassifier *cnn, flo
 }
 
 // Backpropagation
-void backCNNclassifier(float *d_input, int *d_labels, CNNclassifier *cnn, float learningRate,
-					   float lambda) {
+void LeNet_backward(float *d_input, int *d_labels, LeNet *cnn, float learningRate, float lambda,
+					float *timing) {
 	int blockSize = 256;
 
 	int logitsSize = BATCH_SIZE * NUM_CLASSES;
@@ -275,15 +334,4 @@ void backCNNclassifier(float *d_input, int *d_labels, CNNclassifier *cnn, float 
 	sgdUpdateKernel<<<convWeightGrid, blockSize>>>(cnn->d_kernels, cnn->d_d_kernels, learningRate,
 												   convWeight);
 	CHECK_KERNEL_LAUNCH();
-
-	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-}
-
-// Batch Training
-void trainBatch(float *d_input, int *d_labels, CNNclassifier *cnn, float learningRate,
-				float lambda) {
-	float timing[5] = {0.0f};
-
-	forwardCNNClassifier(d_input, d_labels, cnn, timing);
-	backCNNclassifier(d_input, d_labels, cnn, learningRate, lambda);
 }

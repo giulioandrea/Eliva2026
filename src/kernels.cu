@@ -512,7 +512,7 @@ float calculateAccuracy(int *predictions, int *labels, int batch_size) {
 }
 
 // Compute average cross-entropy loss for a batch
-static float compute_batch_loss(float *d_softmax_output, int *d_labels, float *d_loss,
+float compute_batch_loss(float *d_softmax_output, int *d_labels, float *d_loss,
 								float *h_loss, int batchSize) {
 	int blockSize = 256;
 	int gridSize = (batchSize + blockSize - 1) / blockSize;
