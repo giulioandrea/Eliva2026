@@ -1,0 +1,289 @@
+#include "kernels.h"
+#include <cuda_runtime.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/*
+// Forward pass
+void forwardCNN(float *d_input, float *d_kernels, float *d_conv_output, float *d_activation,
+				float *d_pooling_output, float *timing) {
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	dim3 blockDim(8, 8);
+	dim3 gridDim((OUTPUT_SIZE + blockDim.x - 1) / blockDim.x,
+				 (OUTPUT_SIZE + blockDim.y - 1) / blockDim.y, BATCH_SIZE * KERNEL_COUNT);
+
+	cudaEventRecord(start);
+
+	int tileSize = blockDim.x;
+	int tileSizeWithPadding = tileSize + KERNEL_SIZE - 1;
+	int sharedMemSize = INPUT_CHANNELS * tileSizeWithPadding * tileSizeWithPadding * sizeof(float);
+
+	convolutionSharedKernel<<<gridDim, blockDim, sharedMemSize>>>(
+		d_input, d_kernels, d_conv_output, BATCH_SIZE, INPUT_CHANNELS, INPUT_SIZE, KERNEL_SIZE,
+		KERNEL_COUNT, OUTPUT_SIZE, PADDING, STRIDE);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[0], start, stop);
+
+	int totalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
+	int blockSize = 256;
+	int gridSize = (totalElements + blockSize - 1) / blockSize;
+	cudaMemcpy(d_activation, d_conv_output, totalElements * sizeof(float),
+			   cudaMemcpyDeviceToDevice);
+	cudaEventRecord(start);
+
+	reluActivationKernel<<<gridSize, blockSize>>>(d_activation, totalElements);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[1], start, stop);
+
+	int poolSize = 2;
+	int poolStride = 2;
+	int poolOutputSize = OUTPUT_SIZE / poolStride;
+
+	dim3 poolBlockDim(8, 8);
+	dim3 poolGridDim((poolOutputSize + poolBlockDim.x - 1) / poolBlockDim.x,
+					 (poolOutputSize + poolBlockDim.y - 1) / poolBlockDim.y,
+					 BATCH_SIZE * KERNEL_COUNT);
+
+	cudaEventRecord(start);
+
+	maxPoolingKernel<<<poolGridDim, poolBlockDim>>>(d_activation, d_pooling_output, BATCH_SIZE,
+													KERNEL_COUNT, OUTPUT_SIZE, poolSize,
+													poolOutputSize, poolStride);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[2], start, stop);
+}
+*/
+
+typedef struct {
+	float *d_kernels;
+	float *d_conv_output;
+	float *d_activation;
+	float *d_pooling_output;
+	float *d_fc_weights;
+	float *d_fc_bias;
+	float *d_logits;
+	float *d_softmax_output;
+	int *d_predictions;
+	float *d_d_logits;
+	float *d_d_fc_weights;
+	float *d_d_fc_bias;
+	float *d_d_pooling_output;
+	float *d_d_activation;
+	float *d_d_conv_output;
+	float *d_d_kernels;
+} CNNclassifier;
+
+void forwardCNNClassifier(float *d_input, int *d_labels, CNNclassifier *cnn, float *timing) {
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	// Convolution
+	dim3 convBlockDim(8, 8);
+	dim3 convGridDim((OUTPUT_SIZE + convBlockDim.x - 1) / convBlockDim.x,
+					 (OUTPUT_SIZE + convBlockDim.y - 1) / convBlockDim.y,
+					 BATCH_SIZE * KERNEL_COUNT);
+
+	int tileSize = convBlockDim.x;
+	int tileSizeWithPadding = tileSize + KERNEL_SIZE - 1;
+	int sharedMemSize = INPUT_CHANNELS * tileSizeWithPadding * tileSizeWithPadding * sizeof(float);
+	cudaEventRecord(start);
+
+	convolutionSharedKernel<<<convGridDim, convBlockDim, sharedMemSize>>>(
+		d_input, cnn->d_kernels, cnn->d_conv_output, BATCH_SIZE, INPUT_CHANNELS, INPUT_SIZE,
+		KERNEL_SIZE, KERNEL_COUNT, OUTPUT_SIZE, PADDING, STRIDE);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[0], start, stop);
+
+	// Relu
+	int convTotalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
+	cudaMemcpy(cnn->d_activation, cnn->d_conv_output, convTotalElements * sizeof(float),
+			   cudaMemcpyDeviceToDevice);
+
+	int blockSize = 256;
+	int reluGridSize = (convTotalElements + blockSize - 1) / blockSize;
+
+	cudaEventRecord(start);
+	reluActivationKernel<<<reluGridSize, blockSize>>>(cnn->d_activation, convTotalElements);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[1], start, stop);
+
+	// Max pooling
+	dim3 poolBlockDim(8, 8);
+	dim3 poolGridDim((POOL_OUTPUT_SIZE + poolBlockDim.x - 1) / poolBlockDim.x,
+					 (POOL_OUTPUT_SIZE + poolBlockDim.y - 1) / poolBlockDim.y,
+					 BATCH_SIZE * KERNEL_COUNT);
+
+	cudaEventRecord(start);
+
+	maxPoolingKernel<<<poolGridDim, poolBlockDim>>>(cnn->d_activation, cnn->d_pooling_output,
+													BATCH_SIZE, KERNEL_COUNT, OUTPUT_SIZE,
+													POOL_SIZE, POOL_OUTPUT_SIZE, POOL_STRIDE);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[2], start, stop);
+
+	// Fully connected classification: logits = pooling_output * fc_weights.
+	dim3 mmBlockDim(TILE_SIZE, TILE_SIZE);
+	dim3 mmGridDim((NUM_CLASSES + TILE_SIZE - 1) / TILE_SIZE,
+				   (BATCH_SIZE + TILE_SIZE - 1) / TILE_SIZE);
+
+	cudaEventRecord(start);
+
+	matrixMultiplySharedKernel<<<mmGridDim, mmBlockDim>>>(cnn->d_pooling_output, cnn->d_fc_weights,
+														  cnn->d_logits, BATCH_SIZE, FLATTEN_SIZE,
+														  NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	// Add bias
+	dim3 biasBlockDim(16, 16);
+	dim3 biasGridDim((NUM_CLASSES + biasBlockDim.x - 1) / biasBlockDim.x,
+					 (BATCH_SIZE + biasBlockDim.y - 1) / biasBlockDim.y);
+
+	addBiasKernel<<<biasGridDim, biasBlockDim>>>(cnn->d_logits, cnn->d_fc_bias, BATCH_SIZE,
+												 NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[3], start, stop);
+
+	// Softmax
+	int predBlockSize = 256;
+	int predGridSize = (BATCH_SIZE + predBlockSize - 1) / predBlockSize;
+
+	cudaEventRecord(start);
+
+	softmaxKernel<<<predGridSize, predBlockSize>>>(cnn->d_logits, cnn->d_softmax_output, BATCH_SIZE,
+												   NUM_CLASSES);
+
+	// Prediction
+	getPredictionsKernel<<<predGridSize, predBlockSize>>>(cnn->d_softmax_output, cnn->d_predictions,
+														  BATCH_SIZE, NUM_CLASSES);
+
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&timing[4], start, stop);
+
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+}
+
+// Backpropagation
+void backCNNclassifier(float *d_input, int *d_labels, CNNclassifier *cnn, float learningRate,
+					   float lambda) {
+	int blockSize = 256;
+
+	int logitsSize = BATCH_SIZE * NUM_CLASSES;
+	int logitsGrid = (logitsSize + blockSize - 1) / blockSize;
+
+	softmaxCrossEntropyKernel<<<logitsGrid, blockSize>>>(cnn->d_softmax_output, d_labels,
+														 cnn->d_d_logits, BATCH_SIZE, NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	dim3 fcWeightBlock(16, 16);
+	dim3 fcWeightGrid((NUM_CLASSES + fcWeightBlock.x - 1) / fcWeightBlock.x,
+					  (FLATTEN_SIZE + fcWeightBlock.y - 1) / fcWeightBlock.y);
+
+	fcWeightGradientKernel<<<fcWeightGrid, fcWeightBlock>>>(cnn->d_pooling_output, cnn->d_d_logits,
+															cnn->d_d_fc_weights, BATCH_SIZE,
+															FLATTEN_SIZE, NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	int biasGrid = (NUM_CLASSES + blockSize - 1) / blockSize;
+
+	fcBiasGradientKernel<<<biasGrid, blockSize>>>(cnn->d_d_logits, cnn->d_d_fc_bias, BATCH_SIZE,
+												  NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	dim3 fcInputBlock(16, 16);
+	dim3 fcInputGrid((FLATTEN_SIZE + fcInputBlock.x - 1) / fcInputBlock.x,
+					 (BATCH_SIZE + fcInputBlock.y - 1) / fcInputBlock.y);
+
+	fcInputGradientKernel<<<fcInputGrid, fcInputBlock>>>(cnn->d_d_logits, cnn->d_fc_weights,
+														 cnn->d_d_pooling_output, BATCH_SIZE,
+														 FLATTEN_SIZE, NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	// d_activation reset for max pooling backward
+	int convTotalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
+	CHECK_CUDA_ERROR(cudaMemset(cnn->d_d_activation, 0, convTotalElements * sizeof(float)));
+
+	dim3 poolBlockDim(8, 8);
+	dim3 poolGridDim((POOL_OUTPUT_SIZE + poolBlockDim.x - 1) / poolBlockDim.x,
+					 (POOL_OUTPUT_SIZE + poolBlockDim.y - 1) / poolBlockDim.y,
+					 BATCH_SIZE * KERNEL_COUNT);
+
+	maxPoolingBackwardKernel<<<poolGridDim, poolBlockDim>>>(
+		cnn->d_activation, cnn->d_d_pooling_output, cnn->d_d_activation, BATCH_SIZE, KERNEL_COUNT,
+		OUTPUT_SIZE, POOL_SIZE, POOL_OUTPUT_SIZE, POOL_STRIDE);
+	CHECK_KERNEL_LAUNCH();
+
+	// ReLU backward
+	int reluGrid = (convTotalElements + blockSize - 1) / blockSize;
+
+	reluBackwardKernel<<<reluGrid, blockSize>>>(cnn->d_conv_output, // pre-ReLU values
+												cnn->d_d_activation, cnn->d_d_conv_output,
+												convTotalElements);
+	CHECK_KERNEL_LAUNCH();
+
+	int convWeight = KERNEL_COUNT * INPUT_CHANNELS * KERNEL_SIZE * KERNEL_SIZE;
+	int convWGrid = convWeight;
+
+	conv2WeightGradientReduceKernel<<<convWGrid, blockSize, blockSize * sizeof(float)>>>(
+		d_input, cnn->d_d_conv_output, cnn->d_d_kernels, BATCH_SIZE, INPUT_CHANNELS, INPUT_SIZE,
+		INPUT_SIZE, KERNEL_COUNT, KERNEL_SIZE, KERNEL_SIZE, OUTPUT_SIZE, OUTPUT_SIZE, PADDING,
+		PADDING, STRIDE, STRIDE);
+	CHECK_KERNEL_LAUNCH();
+
+	int fcWeights = FLATTEN_SIZE * NUM_CLASSES;
+	int fcUpdateGrid = (fcWeights + blockSize - 1) / blockSize;
+
+	ridgeL2GradientKernel<<<fcUpdateGrid, blockSize>>>(cnn->d_d_fc_weights, cnn->d_fc_weights,
+													   fcWeights, lambda);
+	CHECK_KERNEL_LAUNCH();
+
+	sgdUpdateKernel<<<fcUpdateGrid, blockSize>>>(cnn->d_fc_weights, cnn->d_d_fc_weights,
+												 learningRate, fcWeights);
+	CHECK_KERNEL_LAUNCH();
+
+	int fcBiasGrid = (NUM_CLASSES + blockSize - 1) / blockSize;
+	sgdUpdateKernel<<<fcBiasGrid, blockSize>>>(cnn->d_fc_bias, cnn->d_d_fc_bias, learningRate,
+											   NUM_CLASSES);
+	CHECK_KERNEL_LAUNCH();
+
+	int convWeightGrid = (convWeight + blockSize - 1) / blockSize;
+
+	ridgeL2GradientKernel<<<convWeightGrid, blockSize>>>(cnn->d_d_kernels, cnn->d_kernels,
+														 convWeight, lambda);
+	CHECK_KERNEL_LAUNCH();
+
+	sgdUpdateKernel<<<convWeightGrid, blockSize>>>(cnn->d_kernels, cnn->d_d_kernels, learningRate,
+												   convWeight);
+	CHECK_KERNEL_LAUNCH();
+
+	CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+// Batch Training
+void trainBatch(float *d_input, int *d_labels, CNNclassifier *cnn, float learningRate,
+				float lambda) {
+	float timing[5] = {0.0f};
+
+	forwardCNNClassifier(d_input, d_labels, cnn, timing);
+	backCNNclassifier(d_input, d_labels, cnn, learningRate, lambda);
+}
