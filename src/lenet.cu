@@ -142,9 +142,13 @@ void LeNet_free(LeNet *cnn) {
 }
 
 void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
+	const bool collectTiming = timing != NULL;
 	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
+
+	if (collectTiming) {
+		cudaEventCreate(&start);
+		cudaEventCreate(&stop);
+	}
 
 	// Convolution
 	dim3 convBlockDim(8, 8);
@@ -155,15 +159,19 @@ void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 	int tileSize = convBlockDim.x;
 	int tileSizeWithPadding = tileSize + KERNEL_SIZE - 1;
 	int sharedMemSize = INPUT_CHANNELS * tileSizeWithPadding * tileSizeWithPadding * sizeof(float);
-	cudaEventRecord(start);
+	if (collectTiming) {
+		cudaEventRecord(start);
+	}
 
 	convolutionSharedKernel<<<convGridDim, convBlockDim, sharedMemSize>>>(
 		d_input, cnn->d_kernels, cnn->d_conv_output, BATCH_SIZE, INPUT_CHANNELS, INPUT_SIZE,
 		KERNEL_SIZE, KERNEL_COUNT, OUTPUT_SIZE, PADDING, STRIDE);
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[0], start, stop);
+	if (collectTiming) {
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&timing[0], start, stop);
+	}
 
 	// Relu
 	int convTotalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
@@ -173,12 +181,16 @@ void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 	int blockSize = 256;
 	int reluGridSize = (convTotalElements + blockSize - 1) / blockSize;
 
-	cudaEventRecord(start);
+	if (collectTiming) {
+		cudaEventRecord(start);
+	}
 	reluActivationKernel<<<reluGridSize, blockSize>>>(cnn->d_activation, convTotalElements);
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[1], start, stop);
+	if (collectTiming) {
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&timing[1], start, stop);
+	}
 
 	// Max pooling
 	dim3 poolBlockDim(8, 8);
@@ -186,22 +198,28 @@ void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 					 (POOL_OUTPUT_SIZE + poolBlockDim.y - 1) / poolBlockDim.y,
 					 BATCH_SIZE * KERNEL_COUNT);
 
-	cudaEventRecord(start);
+	if (collectTiming) {
+		cudaEventRecord(start);
+	}
 
 	maxPoolingKernel<<<poolGridDim, poolBlockDim>>>(cnn->d_activation, cnn->d_pooling_output,
 													BATCH_SIZE, KERNEL_COUNT, OUTPUT_SIZE,
 													POOL_SIZE, POOL_OUTPUT_SIZE, POOL_STRIDE);
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[2], start, stop);
+	if (collectTiming) {
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&timing[2], start, stop);
+	}
 
 	// Fully connected classification: logits = pooling_output * fc_weights.
 	dim3 mmBlockDim(TILE_SIZE, TILE_SIZE);
 	dim3 mmGridDim((NUM_CLASSES + TILE_SIZE - 1) / TILE_SIZE,
 				   (BATCH_SIZE + TILE_SIZE - 1) / TILE_SIZE);
 
-	cudaEventRecord(start);
+	if (collectTiming) {
+		cudaEventRecord(start);
+	}
 
 	matrixMultiplySharedKernel<<<mmGridDim, mmBlockDim>>>(cnn->d_pooling_output, cnn->d_fc_weights,
 														  cnn->d_logits, BATCH_SIZE, FLATTEN_SIZE,
@@ -217,15 +235,19 @@ void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 												 NUM_CLASSES);
 	CHECK_KERNEL_LAUNCH();
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[3], start, stop);
+	if (collectTiming) {
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&timing[3], start, stop);
+	}
 
 	// Softmax
 	int predBlockSize = 256;
 	int predGridSize = (BATCH_SIZE + predBlockSize - 1) / predBlockSize;
 
-	cudaEventRecord(start);
+	if (collectTiming) {
+		cudaEventRecord(start);
+	}
 
 	softmaxKernel<<<predGridSize, predBlockSize>>>(cnn->d_logits, cnn->d_softmax_output, BATCH_SIZE,
 												   NUM_CLASSES);
@@ -234,12 +256,16 @@ void LeNet_forward(float *d_input, int *d_labels, LeNet *cnn, float *timing) {
 	getPredictionsKernel<<<predGridSize, predBlockSize>>>(cnn->d_softmax_output, cnn->d_predictions,
 														  BATCH_SIZE, NUM_CLASSES);
 
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[4], start, stop);
+	if (collectTiming) {
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&timing[4], start, stop);
+	}
 
-	cudaEventDestroy(start);
-	cudaEventDestroy(stop);
+	if (collectTiming) {
+		cudaEventDestroy(start);
+		cudaEventDestroy(stop);
+	}
 }
 
 // Backpropagation

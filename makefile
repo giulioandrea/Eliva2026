@@ -7,7 +7,7 @@ OUT_DIR = bin
 
 TARGET = $(OUT_DIR)/main
 
-NVCCFLAGS = -ccbin=g++-15 -O2 -g -G -MMD -MP
+NVCCFLAGS = -ccbin=g++ -O2 -g -G -MMD -MP
 CFLAGS    = -O2 -g -Wall -Wextra -MMD -MP
 LDLIBS    = -lm
 INCLUDES  = -I$(SRC_DIR)

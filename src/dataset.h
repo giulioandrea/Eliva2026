@@ -2,8 +2,8 @@
 #define DATASET_H
 
 #define NUM_CLASSES    10
-#define IMAGE_WIDTH    64
-#define IMAGE_HEIGHT   64
+#define IMAGE_WIDTH    32
+#define IMAGE_HEIGHT   32
 #define IMAGE_CHANNELS 3
 
 typedef struct 

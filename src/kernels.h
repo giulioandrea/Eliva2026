@@ -23,7 +23,7 @@
 
 #define KERNEL_H 5
 #define KERNEL_W 5
-#define KERNEL_COUNT 16
+#define KERNEL_COUNT 32
 
 #define PADDING_Y 2
 #define PADDING_X 2

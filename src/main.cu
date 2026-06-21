@@ -116,11 +116,8 @@ int main(int argc, char **argv) {
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
 										cudaMemcpyHostToDevice));
 
-			float timing[5] = {
-				0.0f}; // TODO: this is just temporary, and needs work (possible seg-fault)
-
-			LeNet_forward(d_input, d_labels, cnn, timing);
-			LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, timing);
+			LeNet_forward(d_input, d_labels, cnn, NULL);
+			LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
 
 			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -169,10 +166,7 @@ int main(int argc, char **argv) {
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
 										cudaMemcpyHostToDevice));
 
-			float timing[5] = {
-				0.0f}; // TODO: this is just temporary, and needs work (possible seg-fault)
-
-			LeNet_forward(d_input, d_labels, cnn, timing);
+			LeNet_forward(d_input, d_labels, cnn, NULL);
 
 			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
