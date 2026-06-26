@@ -2,3 +2,6 @@ legacy-cgi
 opendatasets
 Pillow
 torchvision
+keras
+matplotlib
+tensorflow
