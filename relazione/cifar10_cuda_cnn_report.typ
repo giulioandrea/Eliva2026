@@ -1,4 +1,7 @@
-#set document(title: "CUDA CNN Report on CIFAR-10", author: "Bertetto Luca, Quaglia Giulio Andrea")
+#set document(
+  title: "CUDA CNN Report on CIFAR-10",
+  author: "Bertetto Luca, Quaglia Giulio Andrea",
+)
 
 #set page(
   paper: "a4",
@@ -52,9 +55,14 @@
 }
 
 #align(center)[
-  #text(size: 20pt, weight: "bold")[A CUDA Convolutional Network for CIFAR-10 Image Classification] \
+  #text(
+    size: 20pt,
+    weight: "bold",
+  )[A CUDA Convolutional Network for CIFAR-10 Image Classification] \
   #v(0.3cm)
-  #text(size: 12pt)[Report focused on image-processing aspects of the implemented net] \
+  #text(
+    size: 12pt,
+  )[Report focused on image-processing aspects of the implemented net] \
   #v(0.2cm)
   #text(size: 10pt)[26 June 2026]
 ]
@@ -73,9 +81,7 @@ This report analyses a CUDA/C implementation of a shallow convolutional neural n
 
 = Dataset: CIFAR-10 as an image-processing benchmark
 
-CIFAR-10 is a standard small-image benchmark from the University of Toronto. The official dataset description states that it contains 60,000 RGB colour images of size $32 times 32$, organized into ten mutually exclusive object classes with 6,000 images per class. The standard split contains 50,000 training images and 10,000 test images. The official binary and Python/Matlab layouts store each image as 3072 channel values: 1024 red, 1024 green, and 1024 blue pixels. See #link("http://cave.cs.toronto.edu/kriz/cifar.html")[the official CIFAR page].
-
-The dump confirms the standard balanced split used in this run:
+CIFAR-10 is a standard small-image benchmark from the University of Toronto @krizhevsky_cifar. The official dataset description states that it contains 60,000 RGB colour images of size $32 times 32$, organized into ten mutually exclusive object classes with 6,000 images per class. The standard split contains 50,000 training images and 10,000 test images. The official binary and Python/Matlab layouts store each image as 3072 channel values: 1024 red, 1024 green, and 1024 blue pixels.
 
 #figure(table(
   columns: (auto, auto, auto, auto),
@@ -91,14 +97,14 @@ The dump confirms the standard balanced split used in this run:
   [6], [frog], [5000], [1000],
   [7], [horse], [5000], [1000],
   [8], [ship], [5000], [1000],
-  [9], [truck], [5000], [1000]
-))
+  [9], [truck], [5000], [1000],
+), caption: [Standard balanced split used in this run])
 
 From an image-processing perspective, CIFAR-10 is demanding because the objects are semantically rich but spatially tiny. A $32 times 32$ image contains only 1024 spatial samples per channel, so object boundaries, texture, background context, and color cues are heavily compressed. Good performance therefore depends on filters that can capture local edge/color patterns while preserving enough spatial layout for object-level discrimination.
 
 = Input representation and preprocessing
 
-The implementation indexes images from class directories, decodes PNG/JPEG images with the `stb_image` open source library, forces three RGB channels, resizes each image to $32 times 32$ using bilinear interpolation and normalizes pixel values from integer byte values to floating point values in [0, 1]. The output tensor layout is NCHW:
+The implementation indexes images from class directories, decodes PNG/JPEG images with the `stb_image` open source library, forces three RGB channels, resizes each image to $32 times 32$ using bilinear interpolation and normalizes pixel values from integer byte values to floating point values in the range [0, 1]. The output tensor layout is NCHW:
 
 - *N*: batch size,
 - *C*: channel count (3 for RGB),
@@ -107,7 +113,7 @@ The implementation indexes images from class directories, decodes PNG/JPEG image
 
 The preprocessing can be summarized as:
 
-```text
+```
 file image -> RGB decode -> bilinear resize to 32x32 -> divide by 255 -> NCHW tensor
 ```
 
@@ -132,8 +138,8 @@ const char *CIFAR_CLASS_NAMES[NUM_CLASSES] = {
 
 // Labels are subfolders in dataset directory, each named after the class
 for (int label = 0; label < NUM_CLASSES; label++) {
-    if (!load_class_directory(dataset, root_dir,
-                              CIFAR_CLASS_NAMES[label], label)) return 0;
+    if (!load_class_directory(dataset, root_dir,CIFAR_CLASS_NAMES[label], label)) 
+        return 0;
 }
 ```
 
@@ -200,14 +206,45 @@ The network is a compact CNN with a single learned convolutional feature extract
   columns: (auto, auto, auto, 4.5cm),
   inset: 5pt,
   align: (left, left, left, left),
-  [*Stage*], [*Operation*], [*Output tensor*], [*Image-processing role*],
-  [Input], [RGB image], [$3 times 32 times 32$], [Three color channels at low spatial resolution.],
-  [Convolution], [32 kernels, $5 times 5$, stride 1, padding 2], [$32 times 32 times 32$], [Learns local spatial/color filters while preserving image size.],
-  [Activation], [ReLU], [$32 times 32 times 32$], [Keeps positive filter responses and introduces nonlinearity.],
-  [Pooling], [2×2 max pool, stride 2], [$32 times 16 times 16$], [Downsamples feature maps and adds local translation robustness.],
-  [Flatten], [Vectorization], [$8192$], [Converts spatial feature maps to classifier input.],
-  [Classifier], [Fully connected + bias], [$10$ logits], [Maps extracted features to class scores.],
-  [Output], [Softmax + argmax], [$10$ probabilities + prediction], [Produces normalized class confidence and predicted label.]
+  [*Stage*],
+  [*Operation*],
+  [*Output tensor*],
+  [*Image-processing role*],
+
+  [Input],
+  [RGB image],
+  [$3 times 32 times 32$],
+  [Three color channels at low spatial resolution.],
+
+  [Convolution],
+  [32 kernels, $5 times 5$, stride 1, padding 2],
+  [$32 times 32 times 32$],
+  [Learns local spatial/color filters while preserving image size.],
+
+  [Activation],
+  [ReLU],
+  [$32 times 32 times 32$],
+  [Keeps positive filter responses and introduces nonlinearity.],
+
+  [Pooling],
+  [2×2 max pool, stride 2],
+  [$32 times 16 times 16$],
+  [Downsamples feature maps and adds local translation robustness.],
+
+  [Flatten],
+  [Vectorization],
+  [$8192$],
+  [Converts spatial feature maps to classifier input.],
+
+  [Classifier],
+  [Fully connected + bias],
+  [$10$ logits],
+  [Maps extracted features to class scores.],
+
+  [Output],
+  [Softmax + argmax],
+  [$10$ probabilities + prediction],
+  [Produces normalized class confidence and predicted label.],
 ))
 
 The architecture constants are compiled from the header file:
@@ -244,10 +281,21 @@ The following table summarizes the parameter count and role of each learnable co
   inset: 5pt,
   align: (left, right, right, left),
   [*Parameter group*], [*Shape*], [*Count*], [*Comment*],
-  [Convolution kernels], [$32 times 3 times 5 times 5$], [2,400], [Local color-spatial filters.],
-  [Fully connected weights], [$8192 times 10$], [81,920], [Classifier matrix after flattening.],
+  [Convolution kernels],
+  [$32 times 3 times 5 times 5$],
+  [2,400],
+  [Local color-spatial filters.],
+
+  [Fully connected weights],
+  [$8192 times 10$],
+  [81,920],
+  [Classifier matrix after flattening.],
+
   [Fully connected bias], [$10$], [$10$], [One bias per class.],
-  [Total implemented], [], [84,330], [97.1% of parameters are in the FC weights.]
+  [Total implemented],
+  [],
+  [84,330],
+  [97.1% of parameters are in the FC weights.],
 ))
 
 It is worth noting that the flatten size of 8192 is large relative to the network depth. This means that most parameters and most measured forward time reside in the classifier, which is a limitation of the current architecture. Also note that the convolutional kernels are the only learnable parameters in the feature extractor, so the network's ability to extract useful features is limited by the number of kernels and their size.
@@ -329,12 +377,23 @@ The backward pass follows the usual cross-entropy/softmax training path:
   inset: 5pt,
   align: (left, left),
   [*Backward stage*], [*Purpose*],
-  [Softmax cross-entropy gradient], [Computes `(softmax - one_hot(label)) / batch_size` for the logits.],
-  [FC gradients], [Computes fully connected weight, bias, and input gradients.],
-  [Max-pooling backward], [Routes gradients only to maximum locations selected by the forward pooling window.],
-  [ReLU backward], [Suppresses gradients where pre-ReLU convolution responses were non-positive.],
-  [Convolution weight gradient], [Reduces gradients over batch, spatial position, and input channel dimensions.],
-  [L2 regularization and SGD], [Adds ridge-style weight decay and applies SGD updates.]
+  [Softmax cross-entropy gradient],
+  [Computes `(softmax - one_hot(label)) / batch_size` for the logits.],
+
+  [FC gradients],
+  [Computes fully connected weight, bias, and input gradients.],
+
+  [Max-pooling backward],
+  [Routes gradients only to maximum locations selected by the forward pooling window.],
+
+  [ReLU backward],
+  [Suppresses gradients where pre-ReLU convolution responses were non-positive.],
+
+  [Convolution weight gradient],
+  [Reduces gradients over batch, spatial position, and input channel dimensions.],
+
+  [L2 regularization and SGD],
+  [Adds ridge-style weight decay and applies SGD updates.],
 ))
 
 The source-level implementation of those stages is visible in the following backpropagation excerpt:
@@ -388,7 +447,12 @@ The epoch-level results show steady optimization over all ten epochs.
   columns: (auto, auto, auto, auto, auto),
   inset: 4pt,
   align: (center, right, right, right, right),
-  [*Epoch*], [*Train loss*], [*Train acc.*], [*Test loss*], [*Test acc.*],
+  [*Epoch*],
+  [*Train loss*],
+  [*Train acc.*],
+  [*Test loss*],
+  [*Test acc.*],
+
   [1], [2.0985], [24.65%], [1.9355], [32.85%],
   [2], [1.8700], [34.99%], [1.8339], [35.11%],
   [3], [1.7682], [38.83%], [1.7208], [41.26%],
@@ -398,17 +462,22 @@ The epoch-level results show steady optimization over all ten epochs.
   [7], [1.4916], [48.59%], [1.4678], [48.87%],
   [8], [1.4466], [50.07%], [1.4307], [50.08%],
   [9], [1.4096], [51.30%], [1.4026], [50.73%],
-  [10], [1.3812], [52.26%], [1.3848], [51.75%]
+  [10], [1.3812], [52.26%], [1.3848], [51.75%],
 ))
 
 The curves below visualize the same data.
 
-#grid(
+#figure(grid(
   columns: (1fr, 1fr),
-  gutter: 1.0cm,
-  figure(image("loss_curve.png", width: 100%), caption: [Cross-entropy loss over epochs.]),
-  figure(image("accuracy_curve.png", width: 100%), caption: [Classification accuracy over epochs.])
-)
+  figure(
+    image("loss_curve.png", width: 100%),
+    caption: [Cross-entropy loss over epochs.],
+  ),
+  figure(
+    image("accuracy_curve.png", width: 100%),
+    caption: [Classification accuracy over epochs.],
+  ),
+))
 
 The most important observations are:
 
@@ -425,41 +494,52 @@ The kernel-level timing was measured after every ten batches and at the last bat
   columns: (auto, auto, auto, auto, auto),
   inset: 4pt,
   align: (left, right, right, right, right),
-  [*Forward component*], [*Train mean ms*], [*Train share*], [*Test mean ms*], [*Test share*],
+  [*Forward component*],
+  [*Train mean ms*],
+  [*Train share*],
+  [*Test mean ms*],
+  [*Test share*],
+
   [Conv], [0.722], [8.84%], [0.727], [9.05%],
   [ReLU], [0.012], [0.14%], [0.013], [0.16%],
   [Max pool], [0.023], [0.28%], [0.024], [0.29%],
   [FC + bias], [7.372], [90.30%], [7.239], [90.08%],
-  [Softmax + prediction], [0.035], [0.43%], [0.034], [0.43%]
+  [Softmax + prediction], [0.035], [0.43%], [0.034], [0.43%],
 ))
 
 #grid(
   columns: (1fr, 1fr),
-  gutter: 1.0cm,
-  figure(image("timing_breakdown.png", width: 100%), caption: [Mean training forward-pass timing by component.]),
-  figure(image("forward_time_by_epoch.png", width: 100%), caption: [Mean logged forward time per epoch.])
+  figure(
+    image("timing_breakdown.png", width: 100%),
+    caption: [Mean training forward-pass timing by component.],
+  ),
+  figure(
+    image("forward_time_by_epoch.png", width: 100%),
+    caption: [Mean logged forward time per epoch.],
+  ),
 )
 
 The striking result is that `FC+Bias` accounts for about 90% of measured forward time, even though the convolution has more theoretical multiply-add work. This indicates that the bottleneck is implementation-level rather than purely arithmetic. Likely contributors include memory access patterns, small matrix dimensions, launch overhead, and the custom matrix multiplication kernel. Replacing the custom fully connected path with cuBLAS GEMM, using a deeper convolutional frontend that reduces spatial dimensions before flattening, or replacing the large flatten-to-FC head with global average pooling would make the implementation more balanced.
 
-For reference, the mean forward time per epoch was:
-
-#figure(table(
-  columns: (auto, auto, auto),
-  inset: 4pt,
-  align: (center, right, right),
-  [*Epoch*], [*Train forward ms*], [*Test forward ms*],
-  [1], [7.781], [7.816],
-  [2], [7.878], [7.913],
-  [3], [7.966], [7.988],
-  [4], [8.070], [8.086],
-  [5], [8.116], [8.093],
-  [6], [8.246], [8.064],
-  [7], [8.360], [8.067],
-  [8], [8.360], [8.104],
-  [9], [8.409], [8.115],
-  [10], [8.459], [8.121]
-))
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 4pt,
+    align: (center, right, right),
+    [*Epoch*], [*Train forward ms*], [*Test forward ms*],
+    [1], [7.781], [7.816],
+    [2], [7.878], [7.913],
+    [3], [7.966], [7.988],
+    [4], [8.070], [8.086],
+    [5], [8.116], [8.093],
+    [6], [8.246], [8.064],
+    [7], [8.360], [8.067],
+    [8], [8.360], [8.104],
+    [9], [8.409], [8.115],
+    [10], [8.459], [8.121],
+  ),
+  caption: [Mean forward time per epoch],
+)
 
 The gradual increase in logged training forward time across epochs is small but visible. It is not caused by changing tensor shapes, so it is more likely due to runtime variability, timing overhead, GPU state, or memory/cache effects than the mathematical model itself.
 
@@ -615,7 +695,7 @@ A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA stru
 
 The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The small train-test gap suggests that the model is not mainly limited by overfitting; rather, it is limited by shallow feature extraction, minimal preprocessing, and a classifier-heavy architecture. The best next step is to preserve the CUDA implementation style while deepening the convolutional feature extractor and reducing dependence on the flatten-to-FC classifier.
 
-#pagebreak() 
+#pagebreak()
 #bibliography("bibliography.bib", full: true)
 
 #pagebreak()
