@@ -615,13 +615,8 @@ A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA stru
 
 The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The small train-test gap suggests that the model is not mainly limited by overfitting; rather, it is limited by shallow feature extraction, minimal preprocessing, and a classifier-heavy architecture. The best next step is to preserve the CUDA implementation style while deepening the convolutional feature extractor and reducing dependence on the flatten-to-FC classifier.
 
-#pagebreak()
-= References
-
-1. Alex Krizhevsky, Vinod Nair, and Geoffrey Hinton. "The CIFAR-10 and CIFAR-100 datasets." University of Toronto. #link("http://cave.cs.toronto.edu/kriz/cifar.html")[Dataset page].
-2. Alex Krizhevsky. "Learning Multiple Layers of Features from Tiny Images." Technical report, 2009.
-3. Rafael C. Gonzalez and Richard E. Woods. "Digital Image Processing", 4th edition. Pearson, 2018.
-4. Yuval Meir, Itamar Ben-Noam, Yarden Tzach, Shiri Hodassman & Ido Kanter. "Learning on tree architectures outperforms a convolutional feedforward network.", Nature 2023/01/30 #link("https://www.nature.com/articles/s41598-023-27986-6")[DOI: 10.1038/s41598-023-27986-6].
+#pagebreak() 
+#bibliography("bibliography.bib", full: true)
 
 #pagebreak()
 #show: appendix
