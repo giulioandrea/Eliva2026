@@ -1,9 +1,55 @@
 #set document(title: "CUDA CNN Report on CIFAR-10", author: "Bertetto Luca, Quaglia Giulio Andrea")
-#set page(paper: "a4", margin: (x: 2.0cm, y: 2.0cm))
-#set text(size: 10.5pt)
-#show raw.where(block: true): set text(size: 8pt)
-#set heading(numbering: "1.")
-#set par(justify: true)
+
+#set page(
+  paper: "a4",
+  margin: (x: 4cm, top: 4cm, bottom: 4cm),
+  numbering: "1",
+)
+#set text(
+  font: "New Computer Modern",
+  size: 11pt,
+  hyphenate: true,
+)
+#set par(
+  justify: true,
+  leading: 0.65em,
+  first-line-indent: 1.5em,
+  spacing: 1.2em,
+)
+#set heading(numbering: (..nums) => (
+  numbering("1.1", ..nums) + h(0.6em)
+))
+
+// Import modern plotting packages
+#import "@preview/cetz:0.5.2"
+#import "@preview/cetz-plot:0.1.4": plot
+
+// code block setup
+#import "@preview/codly:1.3.0": *
+
+#show: codly-init.with()
+#codly(
+  zebra-fill: none,
+  fill: rgb("f2f2eb"),
+  number-placement: "outside",
+
+  // Set custom font and color for the line numbers
+  number-format: n => text(
+    font: "New Computer Modern Mono",
+    fill: rgb("888888"),
+    size: 9pt, // Optional: Adjust size if needed
+  )[#n],
+)
+#show raw: set text(font: "New Computer Modern Mono", size: 9pt)
+#show figure.where(kind: raw): set block(breakable: true)
+
+
+// appendices
+#let appendix(body) = {
+  counter(heading).update(0)
+  set heading(numbering: "A.1", supplement: [Appendix])
+  body
+}
 
 #align(center)[
   #text(size: 20pt, weight: "bold")[A CUDA Convolutional Network for CIFAR-10 Image Classification] \
@@ -21,6 +67,7 @@
 
 This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting.
 
+#pagebreak()
 #outline(title: [Contents])
 #pagebreak()
 
@@ -30,8 +77,8 @@ CIFAR-10 is a standard small-image benchmark from the University of Toronto. The
 
 The dump confirms the standard balanced split used in this run:
 
-#table(
-  columns: (0.7cm, 3.2cm, 2.2cm, 2.2cm),
+#figure(table(
+  columns: (auto, auto, auto, auto),
   inset: 5pt,
   align: (center, left, right, right),
   [*Label*], [*Class*], [*Train samples*], [*Test samples*],
@@ -45,7 +92,7 @@ The dump confirms the standard balanced split used in this run:
   [7], [horse], [5000], [1000],
   [8], [ship], [5000], [1000],
   [9], [truck], [5000], [1000]
-)
+))
 
 From an image-processing perspective, CIFAR-10 is demanding because the objects are semantically rich but spatially tiny. A $32 times 32$ image contains only 1024 spatial samples per channel, so object boundaries, texture, background context, and color cues are heavily compressed. Good performance therefore depends on filters that can capture local edge/color patterns while preserving enough spatial layout for object-level discrimination.
 
@@ -149,8 +196,8 @@ This is a minimal and reproducible preprocessing pipeline. It is adequate for ve
 
 The network is a compact CNN with a single learned convolutional feature extraction stage followed by a fully connected classifier. It can be described as a shallow LeNet-style architecture:
 
-#table(
-  columns: (3.0cm, 3.0cm, 3.0cm, 5.0cm),
+#figure(table(
+  columns: (auto, auto, auto, 4.5cm),
   inset: 5pt,
   align: (left, left, left, left),
   [*Stage*], [*Operation*], [*Output tensor*], [*Image-processing role*],
@@ -161,7 +208,7 @@ The network is a compact CNN with a single learned convolutional feature extract
   [Flatten], [Vectorization], [$8192$], [Converts spatial feature maps to classifier input.],
   [Classifier], [Fully connected + bias], [$10$ logits], [Maps extracted features to class scores.],
   [Output], [Softmax + argmax], [$10$ probabilities + prediction], [Produces normalized class confidence and predicted label.]
-)
+))
 
 The architecture constants are compiled from the header file:
 
@@ -192,8 +239,8 @@ The architecture constants are compiled from the header file:
 ```
 The following table summarizes the parameter count and role of each learnable component. The convolutional kernels are the only parameters in the feature extractor, while the fully connected weights and bias are the only parameters in the classifier:
 
-#table(
-  columns: (4.0cm, 3.5cm, 3.0cm, 4.0cm),
+#figure(table(
+  columns: (auto, auto, auto, auto),
   inset: 5pt,
   align: (left, right, right, left),
   [*Parameter group*], [*Shape*], [*Count*], [*Comment*],
@@ -201,7 +248,7 @@ The following table summarizes the parameter count and role of each learnable co
   [Fully connected weights], [$8192 times 10$], [81,920], [Classifier matrix after flattening.],
   [Fully connected bias], [$10$], [$10$], [One bias per class.],
   [Total implemented], [], [84,330], [97.1% of parameters are in the FC weights.]
-)
+))
 
 It is worth noting that the flatten size of 8192 is large relative to the network depth. This means that most parameters and most measured forward time reside in the classifier, which is a limitation of the current architecture. Also note that the convolutional kernels are the only learnable parameters in the feature extractor, so the network's ability to extract useful features is limited by the number of kernels and their size.
 
@@ -277,8 +324,8 @@ getPredictionsKernel<<<predGridSize, predBlockSize>>>(
 
 The backward pass follows the usual cross-entropy/softmax training path:
 
-#table(
-  columns: (4.0cm, 10.0cm),
+#figure(table(
+  columns: (auto, auto),
   inset: 5pt,
   align: (left, left),
   [*Backward stage*], [*Purpose*],
@@ -288,7 +335,7 @@ The backward pass follows the usual cross-entropy/softmax training path:
   [ReLU backward], [Suppresses gradients where pre-ReLU convolution responses were non-positive.],
   [Convolution weight gradient], [Reduces gradients over batch, spatial position, and input channel dimensions.],
   [L2 regularization and SGD], [Adds ridge-style weight decay and applies SGD updates.]
-)
+))
 
 The source-level implementation of those stages is visible in the following backpropagation excerpt:
 
@@ -337,8 +384,8 @@ The run used a fixed seed of 123, batch size 16, learning rate 0.001, L2 coeffic
 
 The epoch-level results show steady optimization over all ten epochs.
 
-#table(
-  columns: (1.0cm, 2.2cm, 2.2cm, 2.2cm, 2.2cm),
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
   inset: 4pt,
   align: (center, right, right, right, right),
   [*Epoch*], [*Train loss*], [*Train acc.*], [*Test loss*], [*Test acc.*],
@@ -352,7 +399,7 @@ The epoch-level results show steady optimization over all ten epochs.
   [8], [1.4466], [50.07%], [1.4307], [50.08%],
   [9], [1.4096], [51.30%], [1.4026], [50.73%],
   [10], [1.3812], [52.26%], [1.3848], [51.75%]
-)
+))
 
 The curves below visualize the same data.
 
@@ -374,8 +421,8 @@ The most important observations are:
 
 The kernel-level timing was measured after every ten batches and at the last batch of each phase. In total, the parsed timing set contains 3760 forward timing lines and 3130 training backward timing lines. The average measured forward pass on training batches is 8.164 ms; the average measured forward pass on test batches is 8.037 ms. The average measured backward pass on logged training batches is 2.193 ms. Thus, the measured training compute path is approximately 10.36 ms per logged batch, excluding data loading and host-to-device transfer overheads.
 
-#table(
-  columns: (4.2cm, 2.2cm, 2.2cm, 2.2cm, 2.2cm),
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
   inset: 4pt,
   align: (left, right, right, right, right),
   [*Forward component*], [*Train mean ms*], [*Train share*], [*Test mean ms*], [*Test share*],
@@ -384,7 +431,7 @@ The kernel-level timing was measured after every ten batches and at the last bat
   [Max pool], [0.023], [0.28%], [0.024], [0.29%],
   [FC + bias], [7.372], [90.30%], [7.239], [90.08%],
   [Softmax + prediction], [0.035], [0.43%], [0.034], [0.43%]
-)
+))
 
 #grid(
   columns: (1fr, 1fr),
@@ -397,8 +444,8 @@ The striking result is that `FC+Bias` accounts for about 90% of measured forward
 
 For reference, the mean forward time per epoch was:
 
-#table(
-  columns: (1.2cm, 3.0cm, 3.0cm),
+#figure(table(
+  columns: (auto, auto, auto),
   inset: 4pt,
   align: (center, right, right),
   [*Epoch*], [*Train forward ms*], [*Test forward ms*],
@@ -412,7 +459,7 @@ For reference, the mean forward time per epoch was:
   [8], [8.360], [8.104],
   [9], [8.409], [8.115],
   [10], [8.459], [8.121]
-)
+))
 
 The gradual increase in logged training forward time across epochs is small but visible. It is not caused by changing tensor shapes, so it is more likely due to runtime variability, timing overhead, GPU state, or memory/cache effects than the mathematical model itself.
 
@@ -568,6 +615,7 @@ A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA stru
 
 The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The small train-test gap suggests that the model is not mainly limited by overfitting; rather, it is limited by shallow feature extraction, minimal preprocessing, and a classifier-heavy architecture. The best next step is to preserve the CUDA implementation style while deepening the convolutional feature extractor and reducing dependence on the flatten-to-FC classifier.
 
+#pagebreak()
 = References
 
 1. Alex Krizhevsky, Vinod Nair, and Geoffrey Hinton. "The CIFAR-10 and CIFAR-100 datasets." University of Toronto. #link("http://cave.cs.toronto.edu/kriz/cifar.html")[Dataset page].
@@ -576,7 +624,8 @@ The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows
 4. Yuval Meir, Itamar Ben-Noam, Yarden Tzach, Shiri Hodassman & Ido Kanter. "Learning on tree architectures outperforms a convolutional feedforward network.", Nature 2023/01/30 #link("https://www.nature.com/articles/s41598-023-27986-6")[DOI: 10.1038/s41598-023-27986-6].
 
 #pagebreak()
-= Appendix: reproducibility notes
+#show: appendix
+= Reproducibility notes
 
 - Dataset root expected by the executable: `dataset/train/<class-name>` and `dataset/test/<class-name>`.
 - Class names in the source code: `airplane`, `automobile`, `bird`, `cat`, `deer`, `dog`, `frog`, `horse`, `ship`, `truck`.
