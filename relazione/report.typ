@@ -607,7 +607,7 @@ model.compile(loss="categorical_crossentropy",
 ```
 
 #figure(table(
-  columns: (3.0cm, 5.6cm, 5.6cm),
+  columns: (auto, 5.6cm, 5.6cm),
   inset: 4pt,
   align: (left, left, left),
   [*Aspect*], [*Python/Keras LeNet*], [*Pure CUDA implementation*],
