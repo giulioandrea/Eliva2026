@@ -73,7 +73,7 @@
 
 = Abstract
 
-This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting.
+This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam, and in-memory CIFAR-10 arrays. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline whose end-to-end bottleneck is dataset reading and decoding from individual image files, not GPU computation alone.
 
 #pagebreak()
 #outline(title: [Contents])
@@ -483,7 +483,7 @@ The most important observations are:
 
 - Training and test accuracy improve monotonically at the epoch-summary level, ending at 52.26% and 51.75% respectively.
 - The final train-test accuracy gap is only 0.51 percentage points, so the network is not strongly overfitting.
-- The final test accuracy is far above the 10% random-choice baseline, but below what deeper CIFAR-10 CNNs can achieve. A state-of-the-art LeNet5, which is the classifier used for this shallow net, underperfoms on CIFAR-10, achieving $75.35% plus.minus 0.55%$ success rate after more epochs.
+- The final test accuracy is far above the 10% random-choice baseline, but below what deeper CIFAR-10 CNNs can achieve and below the Python/Keras LeNet baseline discussed later, which reaches 58.89% in the provided run.
 - The convergence curve has not saturated completely after ten epochs; later epochs, a learning-rate schedule, or a stronger optimizer could plausibly improve the result.
 
 = Timing analysis
@@ -519,7 +519,7 @@ The kernel-level timing was measured after every ten batches and at the last bat
   ),
 )
 
-The striking result is that `FC+Bias` accounts for about 90% of measured forward time, even though the convolution has more theoretical multiply-add work. This indicates that the bottleneck is implementation-level rather than purely arithmetic. Likely contributors include memory access patterns, small matrix dimensions, launch overhead, and the custom matrix multiplication kernel. Replacing the custom fully connected path with cuBLAS GEMM, using a deeper convolutional frontend that reduces spatial dimensions before flattening, or replacing the large flatten-to-FC head with global average pooling would make the implementation more balanced.
+Within the measured GPU forward pass, `FC+Bias` accounts for about 90% of measured forward time, even though the convolution has more theoretical multiply-add work. This indicates that the measured GPU bottleneck is implementation-level rather than purely arithmetic. Likely contributors include memory access patterns, small matrix dimensions, launch overhead, and the custom matrix multiplication kernel. This statement should not be confused with the end-to-end program bottleneck: the timing lines measure CUDA events around GPU stages and exclude file-system I/O, PNG/JPEG decompression through `stbi_load`, CPU bilinear preprocessing, and host-to-device transfer. At system level, the pure CUDA implementation is bottlenecked primarily by the image-file data path. Replacing the custom fully connected path with cuBLAS GEMM would improve the measured GPU path, while replacing per-batch image-file reads with a binary or cached tensor loader would improve the full training program.
 
 #figure(
   table(
@@ -542,6 +542,137 @@ The striking result is that `FC+Bias` accounts for about 90% of measured forward
 )
 
 The gradual increase in logged training forward time across epochs is small but visible. It is not caused by changing tensor shapes, so it is more likely due to runtime variability, timing overhead, GPU state, or memory/cache effects than the mathematical model itself.
+
+
+= Comparison with the Python/Keras LeNet baseline
+
+A second experiment was provided in `lenet.py`. It is useful as a reference implementation, but it is not a direct comparison of two identical nets. The Python version uses Keras, the standard CIFAR-10 loader, a deeper LeNet-style architecture, and the Adam optimizer. The pure CUDA version uses a custom C/CUDA data pipeline, one convolutional feature-extraction layer, a direct flatten-to-softmax classifier, and SGD with L2 regularization.
+
+== Data path and preprocessing
+
+The most important implementation difference is the data path. The Python script loads CIFAR-10 once through the Keras dataset API and then normalizes already materialized arrays:
+
+```python
+# lenet.py, data path
+(x_train, y_train), (x_test, y_test) = datasets.cifar10.load_data()
+
+x_train = x_train / 255.0
+x_test = x_test / 255.0
+```
+
+This means that, during training, Keras iterates over in-memory tensors rather than repeatedly opening one image file per sample. By contrast, the pure CUDA program stores paths to PNG/JPEG files and loads the actual pixels inside `load_batch`:
+
+```c
+// dataset.c, batch-time data loading path
+for (int n = 0; n < batch_size; n++) {
+    int sample_index = start_index + n;
+    if (sample_index >= dataset->count) break;
+
+    int src_w = 0, src_h = 0, src_channels = 0;
+    unsigned char *src = stbi_load(
+        dataset->samples[sample_index].path,
+        &src_w, &src_h, &src_channels, IMAGE_CHANNELS
+    );
+
+    float *dst = images + (size_t)loaded * output_image_size;
+    resize_bilinear(src, src_w, src_h, dst);
+
+    labels[loaded] = dataset->samples[sample_index].label;
+    stbi_image_free(src);
+    loaded++;
+}
+```
+
+This is the reason why the end-to-end CUDA implementation is bottlenecked by file reading and image decoding. The kernel timing table measures CUDA events around GPU computation; it does not include the CPU-side cost of opening files, decoding PNG/JPEG data, resizing, normalizing, filling host buffers, or copying a batch to the GPU. With 50,000 training images, 10,000 test images, and testing after each epoch, the program performs approximately $10 times (50000 + 10000) = 600000$ batch-time image decodes, in addition to the initial dataset-indexing pass that verifies decodability. This overhead is absent from the Keras path because the CIFAR-10 arrays are loaded up front.
+
+== Architecture and optimizer differences
+
+The Python model is closer to the classical LeNet pattern: two convolution/pooling stages followed by two hidden dense layers and an output softmax. The pure CUDA network is shallower in the convolutional part but has a much larger flatten vector because it preserves 32 feature maps at $16 times 16$ before classification.
+
+```python
+# lenet.py, model structure
+model.add(Conv2D(6, kernel_size=(5, 5), activation="relu",
+                 input_shape=(32, 32, 3)))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Conv2D(16, kernel_size=(5, 5), activation="relu"))
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Flatten())
+model.add(Dense(120, activation="relu"))
+model.add(Dense(84, activation="relu"))
+model.add(Dense(10, activation="softmax"))
+
+model.compile(loss="categorical_crossentropy",
+              optimizer="adam",
+              metrics=["accuracy"])
+```
+
+#figure(table(
+  columns: (3.0cm, 5.6cm, 5.6cm),
+  inset: 4pt,
+  align: (left, left, left),
+  [*Aspect*], [*Python/Keras LeNet*], [*Pure CUDA implementation*],
+
+  [Input format],
+  [CIFAR-10 arrays loaded by `datasets.cifar10.load_data()`.],
+  [Image-folder tree: `dataset/train/<class-name>` and `dataset/test/<class-name>`.],
+
+  [Preprocessing],
+  [Divide tensor values by 255.0; no explicit resize because CIFAR-10 is already $32 times 32$.],
+  [Decode PNG/JPEG with `stbi_load`, force RGB, bilinear resize to $32 times 32$, divide by 255, store NCHW.],
+
+  [Feature extractor],
+  [`Conv2D(6, 5×5, valid) -> pool -> Conv2D(16, 5×5, valid) -> pool`.],
+  [`Conv(32, 5×5, stride 1, padding 2) -> ReLU -> 2×2 max pool`.],
+
+  [Classifier],
+  [`Flatten(400) -> Dense(120) -> Dense(84) -> Dense(10)`.],
+  [`Flatten(8192) -> FC(10)`.],
+
+  [Parameters],
+  [62,006 trainable parameters.],
+  [84,330 implemented parameters.],
+
+  [Optimizer],
+  [Adam with categorical cross-entropy.],
+  [Plain SGD with learning rate 0.001 and L2 coefficient $10^(-4)$.],
+
+  [Final train result],
+  [Loss 0.8658, accuracy 69.37%.],
+  [Loss 1.3812, accuracy 52.26%.],
+
+  [Final test result],
+  [Loss 1.2056, accuracy 58.89%.],
+  [Loss 1.3848, accuracy 51.75%.],
+
+  [Main bottleneck],
+  [Mostly hidden inside Keras/TensorFlow kernels and in-memory tensor iteration.],
+  [At system level: repeated file open/decode/resize from individual images; within measured GPU forward time: FC+Bias.],
+), caption: [Comparison between the Python/Keras LeNet and the pure CUDA implementation])
+
+The Python run improves training accuracy from 41.05% after epoch 1 to 69.37% after epoch 10, and reports a final test accuracy of 58.89%. The pure CUDA run improves test accuracy from 32.85% after epoch 1 to 51.75% after epoch 10. The Python model therefore generalizes about 7.14 percentage points better in this experiment, but the difference should be interpreted as a combination of architecture, optimizer, library kernels, and data pipeline rather than as a direct language comparison.
+
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
+  inset: 4pt,
+  align: (center, right, right, right, right),
+  [*Epoch*], [*Python train loss*], [*Python train acc.*], [*CUDA train acc.*], [*CUDA test acc.*],
+  [1], [1.6034], [41.05%], [24.65%], [32.85%],
+  [2], [1.3124], [52.84%], [34.99%], [35.11%],
+  [3], [1.2001], [57.40%], [38.83%], [41.26%],
+  [4], [1.1204], [60.10%], [41.88%], [43.03%],
+  [5], [1.0608], [62.33%], [44.31%], [44.98%],
+  [6], [1.0101], [64.45%], [46.71%], [47.51%],
+  [7], [0.9665], [65.91%], [48.59%], [48.87%],
+  [8], [0.9306], [66.96%], [50.07%], [50.08%],
+  [9], [0.8930], [68.50%], [51.30%], [50.73%],
+  [10], [0.8658], [69.37%], [52.26%], [51.75%],
+), caption: [Training progression of the Python LeNet compared with the CUDA run])
+
+== Interpretation of the comparison
+
+The Python/Keras implementation is stronger for classification because it has two convolutional stages and two hidden dense layers, so it can build a small hierarchy of features before classification. It also uses Adam, which adapts the update scale for each parameter and typically converges faster than plain SGD at the beginning of training. The pure CUDA implementation is more useful as a transparent systems baseline: every GPU kernel, tensor layout, memory copy, and backward-pass stage is visible and controllable.
+
+For image-processing experimentation, the CUDA version should not be judged only by its current end-to-end speed. Its GPU kernels are timed separately and are reasonably stable, but the input pipeline converts a dataset that was originally distributed in compact binary batches into thousands of small image files. This is a poor layout for high-throughput training. The best correction is to add a binary CIFAR-10 reader or a one-time preprocessing step that writes a contiguous tensor cache, then train from that cache. After that change, the remaining bottlenecks would be the custom FC matrix multiplication and the shallow model design rather than file I/O.
 
 = Image-processing interpretation of the learned pipeline
 
@@ -677,23 +808,26 @@ The implementation is clear and useful as a CUDA CNN baseline, but the following
 - There is no per-channel standardization, which may slow optimization and make color statistics harder to learn.
 - The flatten size is large relative to the network depth, causing most parameters and most measured forward time to reside in the classifier.
 - No confusion matrix or per-class accuracy is logged, so the report cannot identify which visual categories are most confused.
+- The CUDA data pipeline reopens and decodes individual image files during batch loading. Because CIFAR-10 is naturally available as compact binary batches, this image-file representation creates avoidable CPU I/O and decoding overhead.
 - The training loop uses plain SGD with a fixed learning rate; no momentum, adaptive optimizer, or learning-rate schedule is used.
 
 = Recommendations
 
 A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA structure but change the representation:
 
-1. Add convolutional blocks: for example, `(conv -> ReLU -> conv -> ReLU -> pool)` repeated two or three times.
-2. Add per-channel normalization using training-set RGB means and standard deviations.
-3. Add random crop with padding, horizontal flip, and light color augmentation.
-4. Reduce the fully connected bottleneck with additional pooling, global average pooling, or a smaller hidden layer.
-5. Use momentum SGD or Adam and a learning-rate schedule.
-6. Log a confusion matrix and per-class precision/recall to connect performance errors to image content, such as animals versus vehicles.
-7. Consider cuBLAS for the fully connected matrix multiply and fuse simple elementwise kernels where possible.
+1. Replace the image-folder loader with a CIFAR-10 binary reader or a one-time preprocessing cache that stores contiguous normalized tensors and labels. This is the most important end-to-end performance fix for the current CUDA implementation.
+2. Add asynchronous prefetching, pinned host memory, and CUDA streams so that batch loading, host-to-device transfer, and GPU computation can overlap.
+3. Add convolutional blocks: for example, `(conv -> ReLU -> conv -> ReLU -> pool)` repeated two or three times.
+4. Add per-channel normalization using training-set RGB means and standard deviations.
+5. Add random crop with padding, horizontal flip, and light color augmentation.
+6. Reduce the fully connected bottleneck with additional pooling, global average pooling, or a smaller hidden layer.
+7. Use momentum SGD or Adam and a learning-rate schedule.
+8. Log a confusion matrix and per-class precision/recall to connect performance errors to image content, such as animals versus vehicles.
+9. Consider cuBLAS for the fully connected matrix multiply and fuse simple elementwise kernels where possible.
 
 = Conclusion
 
-The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The small train-test gap suggests that the model is not mainly limited by overfitting; rather, it is limited by shallow feature extraction, minimal preprocessing, and a classifier-heavy architecture. The best next step is to preserve the CUDA implementation style while deepening the convolutional feature extractor and reducing dependence on the flatten-to-FC classifier.
+The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The comparison with the Python/Keras LeNet shows that the Python model reaches a higher final test accuracy of 58.89%, mainly because it uses a deeper feature hierarchy, Adam, and an in-memory CIFAR-10 data path. The CUDA implementation's most important end-to-end performance limitation is not the GPU kernels alone, but the repeated reading and decoding of individual image files. The best next step is therefore twofold: keep the transparent CUDA kernel structure, but replace the input pipeline with a binary or cached tensor loader, then deepen the convolutional feature extractor and reduce dependence on the flatten-to-FC classifier.
 
 #pagebreak()
 #bibliography("bibliography.bib", full: true)
@@ -707,3 +841,5 @@ The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows
 - Main training constants: `BATCH_SIZE = 16`, `EPOCHS = 10`, `FIXED_SEED = 123`, `learningRate = 0.001`, `lambda = 1e-4`.
 - Tensor sizes from the run: input `3×32×32`, convolution output `32×32×32`, pool output `32×16×16`, flatten size `8192`, output classes `10`.
 - The timing tables in this report are parsed from logged CUDA events and do not include all CPU-side dataset decoding, preprocessing, and host-device transfer costs.
+- The Python/Keras comparison uses `lenet.py` and `python_dump.txt`. Its timing is Keras progress-log timing with CIFAR-10 already loaded into memory, so it should not be treated as a kernel-by-kernel comparison with the CUDA event timings.
+- For the CUDA implementation, the current image-file dataset layout is expected to be much slower than using the original CIFAR-10 binary batches or a preprocessed tensor cache.

@@ -203,7 +203,7 @@ int load_dataset_index(Dataset *dataset, const char *root_dir)
 }
 
 // Bilinear resizing and normalization to RGB [0,1] in NCHW format
-// Output layout: [C][H][W] with C=3, H=64, W=64
+// Output layout: [C][H][W] with C=3, H=32, W=32
 static void resize_bilinear(const unsigned char *src, int src_w, int src_h, float *dst)
 {
     const int dst_w = IMAGE_WIDTH;

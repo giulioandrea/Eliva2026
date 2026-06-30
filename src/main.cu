@@ -8,8 +8,52 @@
 #include "elements.h"
 #include "lenet.h"
 
+/*
+ * Set BATCH_PRINT_EVERY to 1 to print every batch.
+ * Set it to 10 to print every 10 batches plus the last batch.
+ * Set ENABLE_TIMING to 0 if you want progress prints without CUDA timing overhead.
+ */
+static const int BATCH_PRINT_EVERY = 10;
+static const int ENABLE_TIMING = 1;
+
+/* Print timing information for the forward pass of the network.
+ * timing[0] = convolution
+ * timing[1] = ReLU
+ * timing[2] = max pooling
+ * timing[3] = fully connected + bias
+ * timing[4] = softmax + prediction
+ */
+static void print_forward_timing(const char *phase, int epoch, int batch, const float t[5]) {
+	float total = t[0] + t[1] + t[2] + t[3] + t[4];
+
+	printf("Timing | %s | Epoch %d | Batch %d | "
+	       "Forward %.3f ms | Conv %.3f | ReLU %.3f | Pool %.3f | "
+	       "FC+Bias %.3f | Softmax+Pred %.3f\n",
+	       phase, epoch, batch, total, t[0], t[1], t[2], t[3], t[4]);
+	fflush(stdout);
+}
+
+// Print timing information for the backward pass of the network.
+static void print_backward_timing(const char *phase, int epoch, int batch, float t) {
+	printf("Timing | %s | Epoch %d | Batch %d | Backward %.3f ms\n", phase, epoch, batch, t);
+	fflush(stdout);
+}
+
+static int should_print_batch(int batch, int totalBatches) {
+	if (BATCH_PRINT_EVERY <= 0) {
+		return 0;
+	}
+
+	int currentBatch = batch + 1;
+	return ((currentBatch % BATCH_PRINT_EVERY) == 0) || (currentBatch == totalBatches);
+}
+
+static int should_collect_timing(int batch, int totalBatches) {
+	return ENABLE_TIMING && should_print_batch(batch, totalBatches);
+}
+
 int main(int argc, char **argv) {
-	// Uncomment to use getrandom for better randomness in shuffling
+	// Uncomment to use getrandom for better randomness in shuffling.
 	// unsigned char buffer[16];
 	// getrandom(buffer, sizeof(buffer), 0);
 	// unsigned int seed = (*(unsigned int *)buffer);
@@ -53,6 +97,13 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
+	if (testBatches <= 0) {
+		fprintf(stderr, "Test dataset too small for BATCH_SIZE=%d.\n", BATCH_SIZE);
+		free_dataset(&train);
+		free_dataset(&test);
+		return EXIT_FAILURE;
+	}
+
 	printf("\nNetwork configuration:\n");
 	printf("Input:        %d x %d x %d\n", INPUT_CHANNELS, INPUT_H, INPUT_W);
 	printf("Conv output:  %d x %d x %d\n", KERNEL_COUNT, OUTPUT_H, OUTPUT_W);
@@ -91,6 +142,11 @@ int main(int argc, char **argv) {
 
 	LeNet *cnn = LeNet_init(seed);
 
+	cudaEvent_t backwardStart;
+	cudaEvent_t backwardStop;
+	CHECK_CUDA_ERROR(cudaEventCreate(&backwardStart));
+	CHECK_CUDA_ERROR(cudaEventCreate(&backwardStop));
+
 	const float learningRate = 0.001f;
 	const float lambda = 1e-4f;
 
@@ -111,21 +167,34 @@ int main(int argc, char **argv) {
 			}
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_input, h_input, (size_t)inputElements * sizeof(float),
-										cudaMemcpyHostToDevice));
+			                            cudaMemcpyHostToDevice));
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
-										cudaMemcpyHostToDevice));
+			                            cudaMemcpyHostToDevice));
 
-			LeNet_forward(d_input, d_labels, cnn, NULL);
-			LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
+			int printBatch = should_print_batch(batch, trainBatches);
+			int collectTiming = should_collect_timing(batch, trainBatches);
+			float forwardTiming[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+			float backwardTiming = 0.0f;
 
-			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+			LeNet_forward(d_input, d_labels, cnn, collectTiming ? forwardTiming : NULL);
+			CHECK_KERNEL_LAUNCH();
+
+			if (collectTiming) {
+				CHECK_CUDA_ERROR(cudaEventRecord(backwardStart, 0));
+				LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
+				CHECK_CUDA_ERROR(cudaEventRecord(backwardStop, 0));
+				CHECK_CUDA_ERROR(cudaEventSynchronize(backwardStop));
+				CHECK_CUDA_ERROR(cudaEventElapsedTime(&backwardTiming, backwardStart, backwardStop));
+			} else {
+				LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
+			}
 
 			float batchLoss =
 				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
 			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
-										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
+			                            (size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
 
@@ -133,9 +202,14 @@ int main(int argc, char **argv) {
 			trainAccuracySum += batchAccuracy;
 			usedTrainBatches++;
 
-			if ((batch + 1) % 10 == 0) {
-				printf("Epoch %d/%d | Batch %d/%d | Train loss %.4f | Train acc %.4f\n", epoch + 1,
-					   EPOCHS, batch + 1, trainBatches, batchLoss, batchAccuracy);
+			if (printBatch) {
+				printf("Epoch %d/%d | Batch %d/%d | Train loss %.4f | Train acc %.4f\n",
+				       epoch + 1, EPOCHS, batch + 1, trainBatches, batchLoss, batchAccuracy);
+
+				if (collectTiming) {
+					print_forward_timing("Train", epoch + 1, batch + 1, forwardTiming);
+					print_backward_timing("Train", epoch + 1, batch + 1, backwardTiming);
+				}
 			}
 		}
 
@@ -161,26 +235,38 @@ int main(int argc, char **argv) {
 			}
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_input, h_input, (size_t)inputElements * sizeof(float),
-										cudaMemcpyHostToDevice));
+			                            cudaMemcpyHostToDevice));
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
-										cudaMemcpyHostToDevice));
+			                            cudaMemcpyHostToDevice));
 
-			LeNet_forward(d_input, d_labels, cnn, NULL);
+			int printBatch = should_print_batch(batch, testBatches);
+			int collectTiming = should_collect_timing(batch, testBatches);
+			float forwardTiming[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-			CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+			LeNet_forward(d_input, d_labels, cnn, collectTiming ? forwardTiming : NULL);
+			CHECK_KERNEL_LAUNCH();
 
 			float batchLoss =
 				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
 			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
-										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
+			                            (size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
 
 			testLossSum += batchLoss;
 			testAccuracySum += batchAccuracy;
 			usedTestBatches++;
+
+			if (printBatch) {
+				printf("Epoch %d/%d | Batch %d/%d | Test loss %.4f | Test acc %.4f\n",
+				       epoch + 1, EPOCHS, batch + 1, testBatches, batchLoss, batchAccuracy);
+
+				if (collectTiming) {
+					print_forward_timing("Test", epoch + 1, batch + 1, forwardTiming);
+				}
+			}
 		}
 
 		float avgTestLoss = 0.0f;
@@ -192,11 +278,14 @@ int main(int argc, char **argv) {
 		}
 
 		printf("\nEpoch %d/%d completed | "
-			   "Train loss %.4f | Train acc %.4f | Used train batches %d/%d | "
-			   "Test loss %.4f | Test acc %.4f | Used test batches %d/%d\n\n",
-			   epoch + 1, EPOCHS, avgTrainLoss, avgTrainAccuracy, usedTrainBatches, trainBatches,
-			   avgTestLoss, avgTestAccuracy, usedTestBatches, testBatches);
+		       "Train loss %.4f | Train acc %.4f | Used train batches %d/%d | "
+		       "Test loss %.4f | Test acc %.4f | Used test batches %d/%d\n\n",
+		       epoch + 1, EPOCHS, avgTrainLoss, avgTrainAccuracy, usedTrainBatches, trainBatches,
+		       avgTestLoss, avgTestAccuracy, usedTestBatches, testBatches);
 	}
+
+	CHECK_CUDA_ERROR(cudaEventDestroy(backwardStart));
+	CHECK_CUDA_ERROR(cudaEventDestroy(backwardStop));
 
 	cudaFree(d_input);
 	cudaFree(d_labels);
