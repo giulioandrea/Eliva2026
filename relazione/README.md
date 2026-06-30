@@ -19,7 +19,7 @@ Main files:
 Compile locally with:
 
 ```bash
-typst compile cifar10_cuda_cnn_report.typ cifar10_cuda_cnn_report.pdf
+typst compile report.typ report.pdf
 ```
 
 The report imports Typst preview packages (`cetz`, `cetz-plot`, and `codly`). A local Typst installation with package access is required.
