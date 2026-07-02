@@ -9,3 +9,8 @@ example:
 or
 - make all
 - ./main
+
+## Collaborators
+
+- Luca Bertetto
+- Giulio Andrea Quaglia
