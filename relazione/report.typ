@@ -843,3 +843,4 @@ The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows
 - The timing tables in this report are parsed from logged CUDA events and do not include all CPU-side dataset decoding, preprocessing, and host-device transfer costs.
 - The Python/Keras comparison uses `lenet.py` and `python_dump.txt`. Its timing is Keras progress-log timing with CIFAR-10 already loaded into memory, so it should not be treated as a kernel-by-kernel comparison with the CUDA event timings.
 - For the CUDA implementation, the current image-file dataset layout is expected to be much slower than using the original CIFAR-10 binary batches or a preprocessed tensor cache.
+- *Link to repository:* #link("https://github.com/giulioandrea/Eliva2026")[Github - Eliva2026]
