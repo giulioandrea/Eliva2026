@@ -73,7 +73,7 @@
 
 = Abstract
 
-This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam, and in-memory CIFAR-10 arrays. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline whose end-to-end bottleneck is dataset reading and decoding from individual image files, not GPU computation alone.
+This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam, and in-memory CIFAR-10 arrays. A fully convolutional equivalent of the CUDA classifier is then evaluated: reshaping the $8192 times 10$ fully connected matrix into ten $32 times 16 times 16$ valid-convolution filters preserves predictions up to floating-point reduction order, with zero prediction mismatches on the equivalence check, and reduces mean logged training forward time from 8.164 ms to 0.989 ms. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline whose end-to-end bottleneck is dataset reading and decoding from individual image files, while the fully convolutional head removes the measured GPU forward bottleneck caused by the original custom FC kernel.
 
 #pagebreak()
 #outline(title: [Contents])
@@ -519,7 +519,7 @@ The kernel-level timing was measured after every ten batches and at the last bat
   ),
 )
 
-Within the measured GPU forward pass, `FC+Bias` accounts for about 90% of measured forward time, even though the convolution has more theoretical multiply-add work. This indicates that the measured GPU bottleneck is implementation-level rather than purely arithmetic. Likely contributors include memory access patterns, small matrix dimensions, launch overhead, and the custom matrix multiplication kernel. This statement should not be confused with the end-to-end program bottleneck: the timing lines measure CUDA events around GPU stages and exclude file-system I/O, PNG/JPEG decompression through `stbi_load`, CPU bilinear preprocessing, and host-to-device transfer. At system level, the pure CUDA implementation is bottlenecked primarily by the image-file data path. Replacing the custom fully connected path with cuBLAS GEMM would improve the measured GPU path, while replacing per-batch image-file reads with a binary or cached tensor loader would improve the full training program.
+Within the measured GPU forward pass, `FC+Bias` accounts for about 90% of measured forward time, even though the convolution has more theoretical multiply-add work. This indicates that the measured GPU bottleneck is implementation-level rather than purely arithmetic. Likely contributors include memory access patterns, small matrix dimensions, launch overhead, and the custom matrix multiplication kernel. The fully convolutional comparison in Section 10 tests this diagnosis directly by replacing the flatten-plus-FC forward head with a mathematically equivalent valid convolution. This statement should not be confused with the end-to-end program bottleneck: the timing lines measure CUDA events around GPU stages and exclude file-system I/O, PNG/JPEG decompression through `stbi_load`, CPU bilinear preprocessing, and host-to-device transfer. At system level, the pure CUDA implementation is bottlenecked primarily by the image-file data path. Replacing per-batch image-file reads with a binary or cached tensor loader would improve the full training program.
 
 #figure(
   table(
@@ -799,6 +799,152 @@ for (int i = 0; i < num_classes; i++)
     output[batch_idx * num_classes + i] /= sum;
 ```
 
+
+= Comparison with the fully convolutional equivalent
+
+The original CUDA classifier flattens the pooled tensor and multiplies it by a dense weight matrix. The fully convolutional version uses the same learned parameters but views the dense classifier as a convolution whose kernel spans the entire pooled spatial field. For a pooled tensor with shape $32 times 16 times 16$, the flattened vector has $8192$ elements and the original classifier weight matrix has shape $8192 times 10$. The FCN version reshapes those weights into ten filters of shape $32 times 16 times 16$ and applies a valid convolution, producing $10$ class logits at a $1 times 1$ output location.
+
+This is not a new higher-capacity model. It is an implementation-level equivalence: `Flatten(pool) -> FC(8192, 10) + bias` becomes `Conv2D(10 filters, kernel=16x16 over 32 channels) + bias`. The trainable parameter count remains the same: 81,920 head weights plus ten biases. The main benefit is that the classifier is expressed with convolutional indexing and a parallel reduction over the feature dimension instead of the previous custom small-matrix multiplication path.
+
+== Source-level implementation
+
+The FCN support code is additive: `main_fcn.cu` leaves the original `main.cu` path unchanged, wraps the same `LeNet` object, and replaces only the forward classification head. The weight conversion in `kernels_fcn.cu` maps a dense flatten/class index to a convolution filter index:
+
+```c
+// kernels_fcn.cu, FC weight layout -> Conv2D filter layout
+int flattenIndex = (c * kernelH + ky) * kernelW + kx;
+
+// Conv2D layout: [class, channel, ky, kx]
+// FC layout:     [flattenIndex, class]
+convWeights[idx] = fcWeights[flattenIndex * numClasses + cls];
+```
+
+The FC-as-convolution kernel then computes one output logit per `(batch, class)` block. Threads accumulate partial sums over the $32 times 16 times 16$ input feature field and reduce them in shared memory:
+
+```c
+// kernels_fcn.cu, shortened FC-as-Conv2D valid convolution
+for (int f = tid; f < features; f += blockDim.x) {
+    int tmp = f;
+    int x = tmp % inputW;
+    tmp /= inputW;
+    int y = tmp % inputH;
+    tmp /= inputH;
+    int c = tmp;
+
+    int inputIdx = ((b * inChannels + c) * inputH + y) * inputW + x;
+    int weightIdx = ((cls * inChannels + c) * inputH + y) * inputW + x;
+
+    localSum += input[inputIdx] * convWeights[weightIdx];
+}
+
+sharedSum[tid] = localSum;
+__syncthreads();
+
+for (int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if (tid < offset)
+        sharedSum[tid] += sharedSum[tid + offset];
+    __syncthreads();
+}
+
+if (tid == 0)
+    logits[b * numClasses + cls] = sharedSum[0] + bias[cls];
+```
+
+In `lenet_fcn.cu`, `LeNetFCN_forward` synchronizes the reshaped convolution filters from the current dense FC weights before running the forward pass. The training executable still calls the original backward path, because the logits are equivalent and the existing gradient code already updates the dense FC weights:
+
+```c
+// main_fcn.cu, shortened training step
+LeNetFCN_forward(d_input, d_labels, fcn,
+                 collectTiming ? forwardTiming : NULL);
+
+// Original backward path remains unchanged.
+LeNet_backward(d_input, d_labels, cnn,
+               learningRate, lambda, NULL);
+```
+
+== Equivalence check
+
+The standalone equivalence test compares the original FC forward path and the FCN forward path on the same batch and weights. The result shows that the numerical differences are at single-precision roundoff scale and do not change predicted classes:
+
+#figure(table(
+  columns: (auto, auto),
+  inset: 5pt,
+  align: (left, right),
+  [*Check*], [*Measured result*],
+  [`Max |logits_fc - logits_fcn|`], [$1.13248825 times 10^(-6)$],
+  [`Max |softmax_fc - softmax_fcn|`], [$8.94069672 times 10^(-8)$],
+  [Prediction mismatches], [0/16],
+), caption: [FC vs FCN equivalence check])
+
+The small logit and softmax differences are expected because the FC and FCN paths sum the same floating-point products in different orders. For classification, the decisive result is that all 16 predictions agree.
+
+== Accuracy and loss comparison
+
+Because the FCN version is an equivalent forward reparameterization of the same classifier, its learning curve should match the original run apart from tiny differences introduced by floating-point reduction order. That is what the measurements show. The final losses match to four decimal places, and the final accuracies differ only by hundredths of a percentage point.
+
+#figure(table(
+  columns: (auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right),
+  [*Metric*], [*Original FC*], [*FC-as-Conv2D*], [*Difference*],
+  [Final train loss], [1.3812], [1.3812], [0.0000],
+  [Final train accuracy], [52.26%], [52.27%], [+0.01 pp],
+  [Final test loss], [1.3848], [1.3848], [0.0000],
+  [Final test accuracy], [51.75%], [51.73%], [-0.02 pp],
+  [Used training batches], [3125/3125], [3125/3125], [same],
+  [Used test batches], [625/625], [625/625], [same],
+), caption: [Classification results of the original FC head and its FCN-equivalent head])
+
+The accuracy comparison confirms that the FCN run should be interpreted as a systems and implementation comparison rather than as a representation-learning improvement. It preserves the same shallow feature extractor, same parameter count, same training data, same optimizer, and same fixed seed.
+
+== Timing comparison
+
+The timing difference is large because the original classifier dominated the measured forward pass. In the original forward timing, `FC+Bias` used 7.372 ms on average during training logging and represented 90.30% of the forward pass. In the FCN version, the corresponding `FC-as-Conv2D+Bias` stage uses 0.111 ms and represents 11.18% of the forward pass. The mean logged training forward pass drops from 8.164 ms to 0.989 ms, an 8.25× speedup. The mean logged test forward pass drops from 8.037 ms to 0.923 ms, an 8.71× speedup.
+
+#figure(table(
+  columns: (auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right),
+  [*Timing metric*], [*Original FC*], [*FC-as-Conv2D*], [*Speedup*],
+  [Mean train forward], [8.164 ms], [0.989 ms], [8.25×],
+  [Mean test forward], [8.037 ms], [0.923 ms], [8.71×],
+  [Mean train classifier head], [7.372 ms], [0.111 ms], [66.65×],
+  [Mean test classifier head], [7.239 ms], [0.103 ms], [70.19×],
+  [Mean logged train forward + backward], [10.357 ms], [3.351 ms], [3.09×],
+), caption: [Forward timing comparison between the original FC path and the FCN-equivalent path])
+
+#figure(
+  image("fcn_timing_comparison.png", width: 100%),
+  caption: [Mean CUDA event timing for the original FC head and the FC-as-Conv2D head.],
+)
+
+The FCN component breakdown also changes the interpretation of the measured GPU bottleneck. After the head rewrite, convolution becomes the largest forward component instead of the classifier head:
+
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right, right),
+  [*Forward component*],
+  [*FCN train mean ms*],
+  [*FCN train share*],
+  [*FCN test mean ms*],
+  [*FCN test share*],
+  [Conv], [0.802], [81.08%], [0.748], [81.05%],
+  [ReLU], [0.012], [1.22%], [0.012], [1.25%],
+  [Max pool], [0.025], [2.55%], [0.024], [2.56%],
+  [FC-as-Conv2D + bias], [0.111], [11.18%], [0.103], [11.18%],
+  [Softmax + prediction], [0.039], [3.99%], [0.037], [3.96%],
+), caption: [FCN-equivalent forward-pass timing breakdown])
+
+The measured backward pass is slightly slower in the FCN executable, 2.362 ms versus 2.193 ms on average, because the backward computation was intentionally not redesigned. The original gradient path still computes FC gradients and updates the dense FC matrix, while the FCN wrapper resynchronizes the convolutional view of those weights for the next forward pass. Therefore, the main demonstrated improvement is the forward classification path. A complete FCN implementation would also implement the matching convolutional backward/update path or remove the dense-FC storage entirely.
+
+== Interpretation
+
+The fully convolutional comparison supports two conclusions. First, the mathematical classifier can be written either as a dense layer over a flattened vector or as a valid convolution over the whole pooled feature map; for fixed $32 times 32$ CIFAR-10 inputs these two forms are functionally equivalent. Second, the original timing bottleneck was not inherent to the number of multiply-adds in the classifier, but to the particular custom FC implementation used for a very small $16 times 8192$ by $8192 times 10$ multiplication. The FCN head exposes more parallelism per `(batch, class)` output and avoids the original small-GEMM overhead, so it removes the measured forward bottleneck while preserving the image-processing pipeline and classification behavior.
+
+The current FCN executable still uses fixed CIFAR-10 input geometry and a $16 times 16$ classifier kernel, so it should not be described as a fully general dense-prediction network. However, it is a useful bridge between the current classifier and more standard convolutional designs: once the dense head is expressed as a convolution, later experiments can replace the global $16 times 16$ kernel with smaller convolutional blocks plus global average pooling, or slide the classifier over larger feature maps for spatial class-score maps.
+
+
 = Limitations
 
 The implementation is clear and useful as a CUDA CNN baseline, but the following image-processing and learning limitations explain the modest final accuracy:
@@ -806,10 +952,11 @@ The implementation is clear and useful as a CUDA CNN baseline, but the following
 - The network has only one convolutional layer, so its learned representation is mostly low-level.
 - There is no data augmentation, so the model is not explicitly trained for common image transformations.
 - There is no per-channel standardization, which may slow optimization and make color statistics harder to learn.
-- The flatten size is large relative to the network depth, causing most parameters and most measured forward time to reside in the classifier.
+- In the original FC implementation, the flatten size is large relative to the network depth, causing most parameters and most measured forward time to reside in the classifier. The FCN-equivalent head removes this measured forward bottleneck, but it does not add representation capacity.
 - No confusion matrix or per-class accuracy is logged, so the report cannot identify which visual categories are most confused.
 - The CUDA data pipeline reopens and decodes individual image files during batch loading. Because CIFAR-10 is naturally available as compact binary batches, this image-file representation creates avoidable CPU I/O and decoding overhead.
 - The training loop uses plain SGD with a fixed learning rate; no momentum, adaptive optimizer, or learning-rate schedule is used.
+- The FCN executable demonstrates forward-path equivalence only. Its backward/update path still uses the original dense-FC gradient code, and the current classifier kernel is tied to the fixed $16 times 16$ pooled feature geometry.
 
 = Recommendations
 
@@ -820,14 +967,14 @@ A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA stru
 3. Add convolutional blocks: for example, `(conv -> ReLU -> conv -> ReLU -> pool)` repeated two or three times.
 4. Add per-channel normalization using training-set RGB means and standard deviations.
 5. Add random crop with padding, horizontal flip, and light color augmentation.
-6. Reduce the fully connected bottleneck with additional pooling, global average pooling, or a smaller hidden layer.
+6. Keep the FC-as-Conv2D forward head or replace the original custom FC path with cuBLAS; then reduce the remaining classifier dependence with additional pooling, global average pooling, or a smaller hidden layer.
 7. Use momentum SGD or Adam and a learning-rate schedule.
 8. Log a confusion matrix and per-class precision/recall to connect performance errors to image content, such as animals versus vehicles.
 9. Consider cuBLAS for the fully connected matrix multiply and fuse simple elementwise kernels where possible.
 
 = Conclusion
 
-The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The comparison with the Python/Keras LeNet shows that the Python model reaches a higher final test accuracy of 58.89%, mainly because it uses a deeper feature hierarchy, Adam, and an in-memory CIFAR-10 data path. The CUDA implementation's most important end-to-end performance limitation is not the GPU kernels alone, but the repeated reading and decoding of individual image files. The best next step is therefore twofold: keep the transparent CUDA kernel structure, but replace the input pipeline with a binary or cached tensor loader, then deepen the convolutional feature extractor and reduce dependence on the flatten-to-FC classifier.
+The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The comparison with the Python/Keras LeNet shows that the Python model reaches a higher final test accuracy of 58.89%, mainly because it uses a deeper feature hierarchy, Adam, and an in-memory CIFAR-10 data path. The fully convolutional comparison shows that the CUDA classifier can be rewritten as an equivalent valid convolution: the equivalence check reports zero prediction mismatches on a batch of 16, and the final test accuracy remains effectively unchanged at 51.73%, while mean logged training forward time drops from 8.164 ms to 0.989 ms. The CUDA implementation's most important end-to-end performance limitation is still the repeated reading and decoding of individual image files. The best next step is therefore twofold: keep the transparent CUDA kernel structure and the faster FC-as-Conv2D head, but replace the input pipeline with a binary or cached tensor loader, then deepen the convolutional feature extractor and reduce dependence on the global $16 times 16$ classifier kernel.
 
 #pagebreak()
 #bibliography("bibliography.bib", full: true)
@@ -842,5 +989,6 @@ The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows
 - Tensor sizes from the run: input `3×32×32`, convolution output `32×32×32`, pool output `32×16×16`, flatten size `8192`, output classes `10`.
 - The timing tables in this report are parsed from logged CUDA events and do not include all CPU-side dataset decoding, preprocessing, and host-device transfer costs.
 - The Python/Keras comparison uses `lenet.py` and `python_dump.txt`. Its timing is Keras progress-log timing with CIFAR-10 already loaded into memory, so it should not be treated as a kernel-by-kernel comparison with the CUDA event timings.
+- The FCN comparison uses `kernels_fcn.cu`, `lenet_fcn.cu`, `main_fcn.cu`, `check_fcn_equivalence.cu`, and `fcn_dump.txt`. The equivalence check reports maximum logit difference $1.13248825 times 10^(-6)$, maximum softmax difference $8.94069672 times 10^(-8)$, and 0/16 prediction mismatches.
 - For the CUDA implementation, the current image-file dataset layout is expected to be much slower than using the original CIFAR-10 binary batches or a preprocessed tensor cache.
 - *Link to repository:* #link("https://github.com/giulioandrea/Eliva2026")[Github - Eliva2026]
