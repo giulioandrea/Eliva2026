@@ -6,66 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/*
-// Forward pass
-void forwardCNN(float *d_input, float *d_kernels, float *d_conv_output, float *d_activation,
-				float *d_pooling_output, float *timing) {
-	cudaEvent_t start, stop;
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-
-	dim3 blockDim(8, 8);
-	dim3 gridDim((OUTPUT_SIZE + blockDim.x - 1) / blockDim.x,
-				 (OUTPUT_SIZE + blockDim.y - 1) / blockDim.y, BATCH_SIZE * KERNEL_COUNT);
-
-	cudaEventRecord(start);
-
-	int tileSize = blockDim.x;
-	int tileSizeWithPadding = tileSize + KERNEL_SIZE - 1;
-	int sharedMemSize = INPUT_CHANNELS * tileSizeWithPadding * tileSizeWithPadding * sizeof(float);
-
-	convolutionSharedKernel<<<gridDim, blockDim, sharedMemSize>>>(
-		d_input, d_kernels, d_conv_output, BATCH_SIZE, INPUT_CHANNELS, INPUT_SIZE, KERNEL_SIZE,
-		KERNEL_COUNT, OUTPUT_SIZE, PADDING, STRIDE);
-
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[0], start, stop);
-
-	int totalElements = BATCH_SIZE * KERNEL_COUNT * OUTPUT_SIZE * OUTPUT_SIZE;
-	int blockSize = 256;
-	int gridSize = (totalElements + blockSize - 1) / blockSize;
-	cudaMemcpy(d_activation, d_conv_output, totalElements * sizeof(float),
-			   cudaMemcpyDeviceToDevice);
-	cudaEventRecord(start);
-
-	reluActivationKernel<<<gridSize, blockSize>>>(d_activation, totalElements);
-
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[1], start, stop);
-
-	int poolSize = 2;
-	int poolStride = 2;
-	int poolOutputSize = OUTPUT_SIZE / poolStride;
-
-	dim3 poolBlockDim(8, 8);
-	dim3 poolGridDim((poolOutputSize + poolBlockDim.x - 1) / poolBlockDim.x,
-					 (poolOutputSize + poolBlockDim.y - 1) / poolBlockDim.y,
-					 BATCH_SIZE * KERNEL_COUNT);
-
-	cudaEventRecord(start);
-
-	maxPoolingKernel<<<poolGridDim, poolBlockDim>>>(d_activation, d_pooling_output, BATCH_SIZE,
-													KERNEL_COUNT, OUTPUT_SIZE, poolSize,
-													poolOutputSize, poolStride);
-
-	cudaEventRecord(stop);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&timing[2], start, stop);
-}
-*/
-
 LeNet *LeNet_init(unsigned int seed) {
 	LeNet *cnn = (LeNet *)malloc(sizeof(LeNet));
 
