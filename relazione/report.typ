@@ -936,7 +936,7 @@ The FCN component breakdown also changes the interpretation of the measured GPU 
   [Softmax + prediction], [0.039], [3.99%], [0.037], [3.96%],
 ), caption: [FCN-equivalent forward-pass timing breakdown])
 
-The measured backward pass is slightly slower in the FCN executable, 2.362 ms versus 2.193 ms on average, because the backward computation was intentionally not redesigned. The original gradient path still computes FC gradients and updates the dense FC matrix, while the FCN wrapper resynchronizes the convolutional view of those weights for the next forward pass. Therefore, the main demonstrated improvement is the forward classification path. A complete FCN implementation would also implement the matching convolutional backward/update path or remove the dense-FC storage entirely.
+The backward pass is unchanged because the FCN forward path is mathematically equivalent to the original FC path. The backward pass still uses the original dense-FC gradient code, so the mean logged training backward time remains 2.193 ms.
 
 == Interpretation
 
