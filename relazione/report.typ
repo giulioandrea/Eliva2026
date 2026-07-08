@@ -73,7 +73,7 @@
 
 = Abstract
 
-This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam, and in-memory CIFAR-10 arrays. A fully convolutional equivalent of the CUDA classifier is then evaluated: reshaping the $8192 times 10$ fully connected matrix into ten $32 times 16 times 16$ valid-convolution filters preserves predictions up to floating-point reduction order, with zero prediction mismatches on the equivalence check, and reduces mean logged training forward time from 8.164 ms to 0.989 ms. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline whose end-to-end bottleneck is dataset reading and decoding from individual image files, while the fully convolutional head removes the measured GPU forward bottleneck caused by the original custom FC kernel.
+This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling, and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam, and in-memory CIFAR-10 arrays. A fully convolutional equivalent of the CUDA classifier is then evaluated: reshaping the $8192 times 10$ fully connected matrix into ten $32 times 16 times 16$ valid-convolution filters preserves predictions up to floating-point reduction order, with zero prediction mismatches on the equivalence check, and reduces mean logged training forward time from 8.164 ms to 0.989 ms in the first CUDA timing run. The same original and FC-as-Conv2D executables were also run on an NVIDIA Jetson. On that run, the final test accuracy was 52.41% for both classifier heads, while the FC-as-Conv2D forward path reduced mean logged training forward time from 0.638 ms to 0.193 ms and reduced the classifier-head timing from 0.470 ms to 0.027 ms. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline whose end-to-end bottleneck is dataset reading and decoding from individual image files, while the fully convolutional head removes the measured GPU forward bottleneck caused by the original custom FC kernel on both measured platforms.
 
 #pagebreak()
 #outline(title: [Contents])
@@ -945,6 +945,94 @@ The fully convolutional comparison supports two conclusions. First, the mathemat
 The current FCN executable still uses fixed CIFAR-10 input geometry and a $16 times 16$ classifier kernel, so it should not be described as a fully general dense-prediction network. However, it is a useful bridge between the current classifier and more standard convolutional designs: once the dense head is expressed as a convolution, later experiments can replace the global $16 times 16$ kernel with smaller convolutional blocks plus global average pooling, or slide the classifier over larger feature maps for spatial class-score maps.
 
 
+= Measurements on NVIDIA Jetson
+
+The original FC executable and the FC-as-Conv2D executable were also run on an NVIDIA Jetson using the same CIFAR-10 split, batch size 16, ten epochs, and the same network tensor sizes reported earlier. The Jetson given by the University has several Intel Xeon on board.
+
+== Jetson accuracy and loss
+
+The Jetson learning curves are effectively identical for the original dense classifier head and the FC-as-Conv2D forward head. The final epoch reaches 52.32% training accuracy and 52.41% test accuracy. The FCN version preserves the same losses and accuracies to the precision printed by the logger.
+
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
+  inset: 4pt,
+  align: (center, right, right, right, right),
+  [*Epoch*],
+  [*Original FC test loss*],
+  [*Original FC test acc.*],
+  [*FC-as-Conv2D test loss*],
+  [*FC-as-Conv2D test acc.*],
+  [1], [1.9353], [32.72%], [1.9353], [32.72%],
+  [2], [1.8165], [36.52%], [1.8165], [36.52%],
+  [3], [1.7241], [40.53%], [1.7241], [40.53%],
+  [4], [1.6515], [42.66%], [1.6515], [42.66%],
+  [5], [1.5780], [45.07%], [1.5780], [45.07%],
+  [6], [1.5132], [47.68%], [1.5132], [47.68%],
+  [7], [1.4680], [48.84%], [1.4680], [48.84%],
+  [8], [1.4333], [49.91%], [1.4333], [49.91%],
+  [9], [1.4009], [51.03%], [1.4009], [51.03%],
+  [10], [1.3795], [52.41%], [1.3795], [52.41%],
+), caption: [Jetson test-set learning curve for the original FC head and the FC-as-Conv2D head])
+
+#figure(table(
+  columns: (auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right),
+  [*Final Jetson metric*], [*Original FC*], [*FC-as-Conv2D*], [*Difference*],
+  [Train loss], [1.3785], [1.3785], [0.0000],
+  [Train accuracy], [52.32%], [52.32%], [0.00 pp],
+  [Test loss], [1.3795], [1.3795], [0.0000],
+  [Test accuracy], [52.41%], [52.41%], [0.00 pp],
+  [Used training batches], [3125/3125], [3125/3125], [same],
+  [Used test batches], [625/625], [625/625], [same],
+), caption: [Final Jetson accuracy and loss])
+
+These results confirm that the FC-as-Conv2D path is an implementation change rather than a representational change. On Jetson, as in the first timing run, the classifier-head rewrite does not improve accuracy; it preserves the model behavior while changing the timing profile.
+
+== Jetson timing
+
+The Jetson timing logs contain 3760 forward timing lines and 3130 training backward timing lines for each executable. The original dense-head run has a mean logged training forward time of 0.638 ms and a mean logged test forward time of 0.638 ms. The FC-as-Conv2D run has a mean logged training forward time of 0.193 ms and a mean logged test forward time of 0.196 ms. Because the backward path is intentionally unchanged, the mean backward time remains approximately 0.722 ms in both runs.
+
+#figure(table(
+  columns: (auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right),
+  [*Jetson timing metric*], [*Original FC*], [*FC-as-Conv2D*], [*Speedup*],
+  [Mean train forward], [0.638 ms], [0.193 ms], [3.31×],
+  [Mean test forward], [0.638 ms], [0.196 ms], [3.26×],
+  [Mean train classifier head], [0.470 ms], [0.027 ms], [17.48×],
+  [Mean test classifier head], [0.469 ms], [0.027 ms], [17.45×],
+  [Mean train backward], [0.722 ms], [0.722 ms], [1.00×],
+  [Mean logged train forward + backward], [1.360 ms], [0.915 ms], [1.49×],
+), caption: [Jetson CUDA-event timing comparison])
+
+The dense classifier remains the largest component of the original Jetson forward pass, but it is less dominant than in the first timing run. It accounts for 73.61% of the logged training forward time on Jetson, compared with about 90% in the earlier table. After the FC-as-Conv2D rewrite, convolution becomes the dominant Jetson forward component because the classifier head falls to only 0.027 ms.
+
+#figure(table(
+  columns: (auto, auto, auto, auto, auto),
+  inset: 4pt,
+  align: (left, right, right, right, right),
+  [*Forward component*],
+  [*Original FC train mean ms*],
+  [*Original FC train share*],
+  [*FC-as-Conv2D train mean ms*],
+  [*FC-as-Conv2D train share*],
+  [Conv], [0.139], [21.80%], [0.137], [70.95%],
+  [ReLU], [0.013], [2.05%], [0.013], [6.77%],
+  [Max pool], [0.009], [1.42%], [0.009], [4.71%],
+  [Classifier head], [0.470], [73.61%], [0.027], [13.93%],
+  [Softmax + prediction], [0.007], [1.03%], [0.007], [3.45%],
+), caption: [Jetson training forward-pass component breakdown])
+
+The forward-only Jetson speedup is large because the classifier-head kernel is replaced by a more parallel reduction over each `(batch, class)` output. The full logged training compute speedup is smaller because backpropagation is still the original dense-FC backward path. Therefore, on Jetson the FC-as-Conv2D rewrite is most valuable for inference-like forward execution and for diagnosing the forward bottleneck; it does not yet optimize the training backward pass.
+
+== Jetson interpretation
+
+The Jetson measurements strengthen the system-level conclusion of the report. The mathematical network remains shallow and its final accuracy remains around 52%, so the accuracy limit is still dominated by representation capacity and training choices. The hardware-dependent part is the timing distribution: on Jetson, the original classifier head consumes most of the forward pass, while the FC-as-Conv2D equivalent shifts the bottleneck back to the first convolution. This is the desired result of the rewrite, because convolution is the actual image-processing operation that should dominate a small CNN forward pass after removing the inefficient dense-head implementation.
+
+The measured Jetson forward times are CUDA-event times around GPU kernels. They still exclude CPU-side file opening, image decoding, resizing, normalization, and host-to-device transfer. Consequently, the Jetson deployment conclusion is the same as for the other CUDA timing run: the next end-to-end optimization should not be another classifier-head rewrite, but a data path designed for embedded throughput, such as a cached tensor file, pinned host buffers, and overlapped transfer/compute through CUDA streams.
+
+
 = Limitations
 
 The implementation is clear and useful as a CUDA CNN baseline, but the following image-processing and learning limitations explain the modest final accuracy:
@@ -957,6 +1045,7 @@ The implementation is clear and useful as a CUDA CNN baseline, but the following
 - The CUDA data pipeline reopens and decodes individual image files during batch loading. Because CIFAR-10 is naturally available as compact binary batches, this image-file representation creates avoidable CPU I/O and decoding overhead.
 - The training loop uses plain SGD with a fixed learning rate; no momentum, adaptive optimizer, or learning-rate schedule is used.
 - The FCN executable demonstrates forward-path equivalence only. Its backward/update path still uses the original dense-FC gradient code, and the current classifier kernel is tied to the fixed $16 times 16$ pooled feature geometry.
+- The Jetson logs used in the new embedded-platform section do not include the exact Jetson model, power profile, or clock-lock status, so the Jetson measurements should not be interpreted as a reproducible per-board benchmark without recording those settings.
 
 = Recommendations
 
@@ -974,7 +1063,7 @@ A stronger image-processing CNN for CIFAR-10 should keep the efficient CUDA stru
 
 = Conclusion
 
-The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10. The comparison with the Python/Keras LeNet shows that the Python model reaches a higher final test accuracy of 58.89%, mainly because it uses a deeper feature hierarchy, Adam, and an in-memory CIFAR-10 data path. The fully convolutional comparison shows that the CUDA classifier can be rewritten as an equivalent valid convolution: the equivalence check reports zero prediction mismatches on a batch of 16, and the final test accuracy remains effectively unchanged at 51.73%, while mean logged training forward time drops from 8.164 ms to 0.989 ms. The CUDA implementation's most important end-to-end performance limitation is still the repeated reading and decoding of individual image files. The best next step is therefore twofold: keep the transparent CUDA kernel structure and the faster FC-as-Conv2D head, but replace the input pipeline with a binary or cached tensor loader, then deepen the convolutional feature extractor and reduce dependence on the global $16 times 16$ classifier kernel.
+The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows the image-processing pattern of local filtering, non-linear activation, local pooling, and global classification. The experiment demonstrates learning: test accuracy rises from 32.85% after epoch 1 to 51.75% after epoch 10 in the first CUDA run, and the NVIDIA Jetson run reaches 52.41% test accuracy after epoch 10. The comparison with the Python/Keras LeNet shows that the Python model reaches a higher final test accuracy of 58.89%, mainly because it uses a deeper feature hierarchy, Adam, and an in-memory CIFAR-10 data path. The fully convolutional comparison shows that the CUDA classifier can be rewritten as an equivalent valid convolution: the equivalence check reports zero prediction mismatches on a batch of 16, and the final test accuracy remains effectively unchanged. In the first timing run, mean logged training forward time drops from 8.164 ms to 0.989 ms; on the Jetson run, it drops from 0.638 ms to 0.193 ms, with the classifier-head stage falling from 0.470 ms to 0.027 ms. The CUDA implementation's most important end-to-end performance limitation is still the repeated reading and decoding of individual image files. The best next step is therefore twofold: keep the transparent CUDA kernel structure and the faster FC-as-Conv2D head, but replace the input pipeline with a binary or cached tensor loader, then deepen the convolutional feature extractor and reduce dependence on the global $16 times 16$ classifier kernel.
 
 #pagebreak()
 #bibliography("bibliography.bib", full: true)
@@ -991,4 +1080,5 @@ The implemented network is a compact CUDA CNN for CIFAR-10. It correctly follows
 - The Python/Keras comparison uses `lenet.py` and `python_dump.txt`. Its timing is Keras progress-log timing with CIFAR-10 already loaded into memory, so it should not be treated as a kernel-by-kernel comparison with the CUDA event timings.
 - The FCN comparison uses `kernels_fcn.cu`, `lenet_fcn.cu`, `main_fcn.cu`, `check_fcn_equivalence.cu`, and `fcn_dump.txt`. The equivalence check reports maximum logit difference $1.13248825 times 10^(-6)$, maximum softmax difference $8.94069672 times 10^(-8)$, and 0/16 prediction mismatches.
 - For the CUDA implementation, the current image-file dataset layout is expected to be much slower than using the original CIFAR-10 binary batches or a preprocessed tensor cache.
+- The Jetson section was parsed from `jetson_dump.txt` and `jetson_fcn_dump.txt`. Both logs contain 3760 forward timing lines and 3130 training backward timing lines. The final Jetson summary is: train loss 1.3785, train accuracy 52.32%, test loss 1.3795, and test accuracy 52.41%. The logs do not include Jetson model, power mode, or locked-clock configuration.
 - *Link to repository:* #link("https://github.com/giulioandrea/Eliva2026")[Github - Eliva2026]
