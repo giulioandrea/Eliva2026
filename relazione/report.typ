@@ -71,10 +71,12 @@
 #line(length: 100%)
 #v(0.5cm)
 
-= Abstract
-
-This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam and in-memory CIFAR-10 arrays. A fully convolutional equivalent of the CUDA classifier is then evaluated: reshaping the $8192 times 10$ fully connected matrix into ten $32 times 16 times 16$ valid-convolution filters preserves predictions up to floating-point reduction order, with zero prediction mismatches on the equivalence check and reduces mean logged training forward time from 8.164 ms to 0.989 ms in the first CUDA timing run. The same original and FC-as-Conv2D executables were then run on an NVIDIA Jetson Orin with 8 GB of unified memory. On the corrected embedded run, the final test accuracy was 51.90% for the original FC head and 51.91% for the FC-as-Conv2D head. The FC-as-Conv2D forward path reduced mean logged training forward time from 22.845 ms to 10.062 ms and reduced the classifier-head timing from 13.490 ms to 0.718 ms. The Fc-as-Conv2D shows an improvement that goes from 47.707 ms to 34.914 ms. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline: end-to-end performance is still affected by dataset reading and decoding from individual image files, while the FC-as-Conv2D head removes the dense-head forward bottleneck and exposes convolution and the unchanged backward path as the next GPU-side costs on Jetson.
-
+#align(center)[
+  #set par(justify: true)
+  *Abstract* \
+]
+  This report analyses a CUDA/C implementation of a shallow convolutional neural network trained on CIFAR-10. The network receives a low-resolution RGB image, applies learned spatial convolution filters, introduces non-linearity with ReLU, reduces local spatial variation with max pooling and classifies the resulting feature vector with a fully connected softmax head. The run used all 50,000 training samples and all 10,000 test samples. Over ten epochs, the test accuracy increased from 32.85% to 51.75%, while the test loss decreased from 1.9355 to 1.3848. The final train-test gap was small, approximately 0.51 percentage points, which indicates that the principal limitation is model capacity and representation rather than overfitting. A Python/Keras LeNet baseline is also compared: it reaches 58.89% test accuracy after ten epochs, but it uses a deeper architecture, Adam and in-memory CIFAR-10 arrays. A fully convolutional equivalent of the CUDA classifier is then evaluated: reshaping the $8192 times 10$ fully connected matrix into ten $32 times 16 times 16$ valid-convolution filters preserves predictions up to floating-point reduction order, with zero prediction mismatches on the equivalence check and reduces mean logged training forward time from 8.164 ms to 0.989 ms in the first CUDA timing run. The same original and FC-as-Conv2D executables were then run on an NVIDIA Jetson Orin with 8 GB of unified memory. On the corrected embedded run, the final test accuracy was 51.90% for the original FC head and 51.91% for the FC-as-Conv2D head. The FC-as-Conv2D forward path reduced mean logged training forward time from 22.845 ms to 10.062 ms and reduced the classifier-head timing from 13.490 ms to 0.718 ms. The Fc-as-Conv2D shows an improvement that goes from 47.707 ms to 34.914 ms. The pure CUDA implementation is therefore best interpreted as a transparent custom-kernel baseline: end-to-end performance is still affected by dataset reading and decoding from individual image files, while the FC-as-Conv2D head removes the dense-head forward bottleneck and exposes convolution and the unchanged backward path as the next GPU-side costs on Jetson.
+  
 #pagebreak()
 #outline(title: [Contents])
 #pagebreak()
@@ -83,22 +85,25 @@ This report analyses a CUDA/C implementation of a shallow convolutional neural n
 
 CIFAR-10 is a standard small-image benchmark from the University of Toronto @krizhevsky_cifar. The official dataset description states that it contains 60,000 RGB colour images of size $32 times 32$, organized into ten mutually exclusive object classes with 6,000 images per class. The standard split contains 50,000 training images and 10,000 test images. The official binary and Python/Matlab layouts store each image as 3072 channel values: 1024 red, 1024 green and 1024 blue pixels.
 
-#figure(table(
-  columns: (auto, auto, auto, auto),
-  inset: 5pt,
-  align: (center, left, right, right),
-  [*Label*], [*Class*], [*Train samples*], [*Test samples*],
-  [0], [airplane], [5000], [1000],
-  [1], [automobile], [5000], [1000],
-  [2], [bird], [5000], [1000],
-  [3], [cat], [5000], [1000],
-  [4], [deer], [5000], [1000],
-  [5], [dog], [5000], [1000],
-  [6], [frog], [5000], [1000],
-  [7], [horse], [5000], [1000],
-  [8], [ship], [5000], [1000],
-  [9], [truck], [5000], [1000],
-), caption: [Standard balanced split used in this run])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (center, left, right, right),
+    [*Label*], [*Class*], [*Train samples*], [*Test samples*],
+    [0], [airplane], [5000], [1000],
+    [1], [automobile], [5000], [1000],
+    [2], [bird], [5000], [1000],
+    [3], [cat], [5000], [1000],
+    [4], [deer], [5000], [1000],
+    [5], [dog], [5000], [1000],
+    [6], [frog], [5000], [1000],
+    [7], [horse], [5000], [1000],
+    [8], [ship], [5000], [1000],
+    [9], [truck], [5000], [1000],
+  ),
+  caption: [Standard balanced split used in this run],
+)
 
 From an image-processing perspective, CIFAR-10 is demanding because the objects are semantically rich but spatially tiny. A $32 times 32$ image contains only 1024 spatial samples per channel, so object boundaries, texture, background context and color cues are heavily compressed. Good performance therefore depends on filters that can capture local edge/color patterns while preserving enough spatial layout for object-level discrimination.
 
@@ -138,7 +143,7 @@ const char *CIFAR_CLASS_NAMES[NUM_CLASSES] = {
 
 // Labels are subfolders in dataset directory, each named after the class
 for (int label = 0; label < NUM_CLASSES; label++) {
-    if (!load_class_directory(dataset, root_dir,CIFAR_CLASS_NAMES[label], label)) 
+    if (!load_class_directory(dataset, root_dir,CIFAR_CLASS_NAMES[label], label))
         return 0;
 }
 ```
@@ -606,67 +611,80 @@ model.compile(loss="categorical_crossentropy",
               metrics=["accuracy"])
 ```
 
-#figure(table(
-  columns: (auto, 5.6cm, 5.6cm),
-  inset: 4pt,
-  align: (left, left, left),
-  [*Aspect*], [*Python/Keras LeNet*], [*Pure CUDA implementation*],
+#figure(
+  table(
+    columns: (auto, 5.6cm, 5.6cm),
+    inset: 4pt,
+    align: (left, left, left),
+    [*Aspect*],
+    [*Python/Keras LeNet*],
+    [*Pure CUDA implementation*],
 
-  [Input format],
-  [CIFAR-10 arrays loaded by `datasets.cifar10.load_data()`.],
-  [Image-folder tree: `dataset/train/<class-name>` and `dataset/test/<class-name>`.],
+    [Input format],
+    [CIFAR-10 arrays loaded by `datasets.cifar10.load_data()`.],
+    [Image-folder tree: `dataset/train/<class-name>` and `dataset/test/<class-name>`.],
 
-  [Preprocessing],
-  [Divide tensor values by 255.0; no explicit resize because CIFAR-10 is already $32 times 32$.],
-  [Decode PNG/JPEG with `stbi_load`, force RGB, bilinear resize to $32 times 32$, divide by 255, store NCHW.],
+    [Preprocessing],
+    [Divide tensor values by 255.0; no explicit resize because CIFAR-10 is already $32 times 32$.],
+    [Decode PNG/JPEG with `stbi_load`, force RGB, bilinear resize to $32 times 32$, divide by 255, store NCHW.],
 
-  [Feature extractor],
-  [`Conv2D(6, 5×5, valid) -> pool -> Conv2D(16, 5×5, valid) -> pool`.],
-  [`Conv(32, 5×5, stride 1, padding 2) -> ReLU -> 2×2 max pool`.],
+    [Feature extractor],
+    [`Conv2D(6, 5×5, valid) -> pool -> Conv2D(16, 5×5, valid) -> pool`.],
+    [`Conv(32, 5×5, stride 1, padding 2) -> ReLU -> 2×2 max pool`.],
 
-  [Classifier],
-  [`Flatten(400) -> Dense(120) -> Dense(84) -> Dense(10)`.],
-  [`Flatten(8192) -> FC(10)`.],
+    [Classifier],
+    [`Flatten(400) -> Dense(120) -> Dense(84) -> Dense(10)`.],
+    [`Flatten(8192) -> FC(10)`.],
 
-  [Parameters],
-  [62,006 trainable parameters.],
-  [84,330 implemented parameters.],
+    [Parameters],
+    [62,006 trainable parameters.],
+    [84,330 implemented parameters.],
 
-  [Optimizer],
-  [Adam with categorical cross-entropy.],
-  [Plain SGD with learning rate 0.001 and L2 coefficient $10^(-4)$.],
+    [Optimizer],
+    [Adam with categorical cross-entropy.],
+    [Plain SGD with learning rate 0.001 and L2 coefficient $10^(-4)$.],
 
-  [Final train result],
-  [Loss 0.8658, accuracy 69.37%.],
-  [Loss 1.3812, accuracy 52.26%.],
+    [Final train result],
+    [Loss 0.8658, accuracy 69.37%.],
+    [Loss 1.3812, accuracy 52.26%.],
 
-  [Final test result],
-  [Loss 1.2056, accuracy 58.89%.],
-  [Loss 1.3848, accuracy 51.75%.],
+    [Final test result],
+    [Loss 1.2056, accuracy 58.89%.],
+    [Loss 1.3848, accuracy 51.75%.],
 
-  [Main bottleneck],
-  [Mostly hidden inside Keras/TensorFlow kernels and in-memory tensor iteration.],
-  [At system level: repeated file open/decode/resize from individual images; within measured GPU forward time: FC+Bias.],
-), caption: [Comparison between the Python/Keras LeNet and the pure CUDA implementation])
+    [Main bottleneck],
+    [Mostly hidden inside Keras/TensorFlow kernels and in-memory tensor iteration.],
+    [At system level: repeated file open/decode/resize from individual images; within measured GPU forward time: FC+Bias.],
+  ),
+  caption: [Comparison between the Python/Keras LeNet and the pure CUDA implementation],
+)
 
 The Python run improves training accuracy from 41.05% after epoch 1 to 69.37% after epoch 10 and reports a final test accuracy of 58.89%. The pure CUDA run improves test accuracy from 32.85% after epoch 1 to 51.75% after epoch 10. The Python model therefore generalizes about 7.14 percentage points better in this experiment, but the difference should be interpreted as a combination of architecture, optimizer, library kernels and data pipeline rather than as a direct language comparison.
 
-#figure(table(
-  columns: (auto, auto, auto, auto, auto),
-  inset: 4pt,
-  align: (center, right, right, right, right),
-  [*Epoch*], [*Python train loss*], [*Python train acc.*], [*CUDA train acc.*], [*CUDA test acc.*],
-  [1], [1.6034], [41.05%], [24.65%], [32.85%],
-  [2], [1.3124], [52.84%], [34.99%], [35.11%],
-  [3], [1.2001], [57.40%], [38.83%], [41.26%],
-  [4], [1.1204], [60.10%], [41.88%], [43.03%],
-  [5], [1.0608], [62.33%], [44.31%], [44.98%],
-  [6], [1.0101], [64.45%], [46.71%], [47.51%],
-  [7], [0.9665], [65.91%], [48.59%], [48.87%],
-  [8], [0.9306], [66.96%], [50.07%], [50.08%],
-  [9], [0.8930], [68.50%], [51.30%], [50.73%],
-  [10], [0.8658], [69.37%], [52.26%], [51.75%],
-), caption: [Training progression of the Python LeNet compared with the CUDA run])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (center, right, right, right, right),
+    [*Epoch*],
+    [*Python train loss*],
+    [*Python train acc.*],
+    [*CUDA train acc.*],
+    [*CUDA test acc.*],
+
+    [1], [1.6034], [41.05%], [24.65%], [32.85%],
+    [2], [1.3124], [52.84%], [34.99%], [35.11%],
+    [3], [1.2001], [57.40%], [38.83%], [41.26%],
+    [4], [1.1204], [60.10%], [41.88%], [43.03%],
+    [5], [1.0608], [62.33%], [44.31%], [44.98%],
+    [6], [1.0101], [64.45%], [46.71%], [47.51%],
+    [7], [0.9665], [65.91%], [48.59%], [48.87%],
+    [8], [0.9306], [66.96%], [50.07%], [50.08%],
+    [9], [0.8930], [68.50%], [51.30%], [50.73%],
+    [10], [0.8658], [69.37%], [52.26%], [51.75%],
+  ),
+  caption: [Training progression of the Python LeNet compared with the CUDA run],
+)
 
 == Interpretation of the comparison
 
@@ -866,15 +884,22 @@ LeNet_backward(d_input, d_labels, cnn,
 
 The standalone equivalence test compares the original FC forward path and the FCN forward path on the same batch and weights. The result shows that the numerical differences are at single-precision roundoff scale and do not change predicted classes:
 
-#figure(table(
-  columns: (auto, auto),
-  inset: 5pt,
-  align: (left, right),
-  [*Check*], [*Measured result*],
-  [`Max |logits_fc - logits_fcn|`], [$1.13248825 times 10^(-6)$],
-  [`Max |softmax_fc - softmax_fcn|`], [$8.94069672 times 10^(-8)$],
-  [Prediction mismatches], [0/16],
-), caption: [FC vs FCN equivalence check])
+#figure(
+  table(
+    columns: (auto, auto),
+    inset: 5pt,
+    align: (left, right),
+    [*Check*], [*Measured result*],
+    [`Max |logits_fc - logits_fcn|`],
+    [$1.13248825 times 10^(-6)$],
+
+    [`Max |softmax_fc - softmax_fcn|`],
+    [$8.94069672 times 10^(-8)$],
+
+    [Prediction mismatches], [0/16],
+  ),
+  caption: [FC vs FCN equivalence check],
+)
 
 The small logit and softmax differences are expected because the FC and FCN paths sum the same floating-point products in different orders. For classification, the decisive result is that all 16 predictions agree.
 
@@ -882,18 +907,25 @@ The small logit and softmax differences are expected because the FC and FCN path
 
 Because the FCN version is an equivalent forward reparameterization of the same classifier, its learning curve should match the original run apart from tiny differences introduced by floating-point reduction order. That is what the measurements show. The final losses match to four decimal places and the final accuracies differ only by hundredths of a percentage point.
 
-#figure(table(
-  columns: (auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right),
-  [*Metric*], [*Original FC*], [*FC-as-Conv2D*], [*Difference*],
-  [Final train loss], [1.3812], [1.3812], [0.0000],
-  [Final train accuracy], [52.26%], [52.27%], [+0.01 pp],
-  [Final test loss], [1.3848], [1.3848], [0.0000],
-  [Final test accuracy], [51.75%], [51.73%], [-0.02 pp],
-  [Used training batches], [3125/3125], [3125/3125], [same],
-  [Used test batches], [625/625], [625/625], [same],
-), caption: [Classification results of the original FC head and its FCN-equivalent head])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right),
+    [*Metric*],
+    [*Original FC*],
+    [*FC-as-Conv2D*],
+    [*Difference*],
+
+    [Final train loss], [1.3812], [1.3812], [0.0000],
+    [Final train accuracy], [52.26%], [52.27%], [+0.01 pp],
+    [Final test loss], [1.3848], [1.3848], [0.0000],
+    [Final test accuracy], [51.75%], [51.73%], [-0.02 pp],
+    [Used training batches], [3125/3125], [3125/3125], [same],
+    [Used test batches], [625/625], [625/625], [same],
+  ),
+  caption: [Classification results of the original FC head and its FCN-equivalent head],
+)
 
 The accuracy comparison confirms that the FCN run should be interpreted as a systems and implementation comparison rather than as a representation-learning improvement. It preserves the same shallow feature extractor, same parameter count, same training data, same optimizer and same fixed seed.
 
@@ -901,17 +933,35 @@ The accuracy comparison confirms that the FCN run should be interpreted as a sys
 
 The timing difference is large because the original classifier dominated the measured forward pass. In the original forward timing, `FC+Bias` used 7.372 ms on average during training logging and represented 90.30% of the forward pass. In the FCN version, the corresponding `FC-as-Conv2D+Bias` stage uses 0.111 ms and represents 11.18% of the forward pass. The mean logged training forward pass drops from 8.164 ms to 0.989 ms, an 8.25× speedup. The mean logged test forward pass drops from 8.037 ms to 0.923 ms, an 8.71× speedup.
 
-#figure(table(
-  columns: (auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right),
-  [*Timing metric*], [*Original FC*], [*FC-as-Conv2D*], [*Speedup*],
-  [Mean train forward], [8.164 ms], [0.989 ms], [8.25×],
-  [Mean test forward], [8.037 ms], [0.923 ms], [8.71×],
-  [Mean train classifier head], [7.372 ms], [0.111 ms], [66.65×],
-  [Mean test classifier head], [7.239 ms], [0.103 ms], [70.19×],
-  [Mean logged train forward + backward], [10.357 ms], [3.351 ms], [3.09×],
-), caption: [Forward timing comparison between the original FC path and the FCN-equivalent path])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right),
+    [*Timing metric*],
+    [*Original FC*],
+    [*FC-as-Conv2D*],
+    [*Speedup*],
+
+    [Mean train forward], [8.164 ms], [0.989 ms], [8.25×],
+    [Mean test forward], [8.037 ms], [0.923 ms], [8.71×],
+    [Mean train classifier head],
+    [7.372 ms],
+    [0.111 ms],
+    [66.65×],
+
+    [Mean test classifier head],
+    [7.239 ms],
+    [0.103 ms],
+    [70.19×],
+
+    [Mean logged train forward + backward],
+    [10.357 ms],
+    [3.351 ms],
+    [3.09×],
+  ),
+  caption: [Forward timing comparison between the original FC path and the FCN-equivalent path],
+)
 
 #figure(
   image("fcn_timing_comparison.png", width: 100%),
@@ -920,21 +970,25 @@ The timing difference is large because the original classifier dominated the mea
 
 The FCN component breakdown also changes the interpretation of the measured GPU bottleneck. After the head rewrite, convolution becomes the largest forward component instead of the classifier head:
 
-#figure(table(
-  columns: (auto, auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right, right),
-  [*Forward component*],
-  [*FCN train mean ms*],
-  [*FCN train share*],
-  [*FCN test mean ms*],
-  [*FCN test share*],
-  [Conv], [0.802], [81.08%], [0.748], [81.05%],
-  [ReLU], [0.012], [1.22%], [0.012], [1.25%],
-  [Max pool], [0.025], [2.55%], [0.024], [2.56%],
-  [FC-as-Conv2D + bias], [0.111], [11.18%], [0.103], [11.18%],
-  [Softmax + prediction], [0.039], [3.99%], [0.037], [3.96%],
-), caption: [FCN-equivalent forward-pass timing breakdown])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right, right),
+    [*Forward component*],
+    [*FCN train mean ms*],
+    [*FCN train share*],
+    [*FCN test mean ms*],
+    [*FCN test share*],
+
+    [Conv], [0.802], [81.08%], [0.748], [81.05%],
+    [ReLU], [0.012], [1.22%], [0.012], [1.25%],
+    [Max pool], [0.025], [2.55%], [0.024], [2.56%],
+    [FC-as-Conv2D + bias], [0.111], [11.18%], [0.103], [11.18%],
+    [Softmax + prediction], [0.039], [3.99%], [0.037], [3.96%],
+  ),
+  caption: [FCN-equivalent forward-pass timing breakdown],
+)
 
 The backward pass is unchanged because the FCN forward path is mathematically equivalent to the original FC path. The backward pass still uses the original dense-FC gradient code, so the mean logged training backward time remains 2.193 ms.
 
@@ -953,39 +1007,50 @@ The original FC executable and the FC-as-Conv2D executable were also run on an N
 
 The Jetson learning curves remain effectively identical for the original dense classifier head and the FC-as-Conv2D forward head. The final epoch reaches 52.31% training accuracy and 51.90% test accuracy for the original FC run and 52.30% training accuracy and 51.91% test accuracy for the FC-as-Conv2D run. The 0.01 percentage-point differences confirm that the FC-as-Conv2D path is an implementation change, not a representation-learning change.
 
-#figure(table(
-  columns: (auto, auto, auto, auto, auto),
-  inset: 4pt,
-  align: (center, right, right, right, right),
-  [*Epoch*],
-  [*Original FC test loss*],
-  [*Original FC test acc.*],
-  [*FC-as-Conv2D test loss*],
-  [*FC-as-Conv2D test acc.*],
-  [1], [1.9338], [32.82%], [1.9339], [32.81%],
-  [2], [1.8185], [36.27%], [1.8185], [36.29%],
-  [3], [1.7198], [40.99%], [1.7198], [40.98%],
-  [4], [1.6474], [42.96%], [1.6475], [42.95%],
-  [5], [1.5715], [45.72%], [1.5716], [45.72%],
-  [6], [1.5087], [48.09%], [1.5087], [48.07%],
-  [7], [1.4720], [48.76%], [1.4721], [48.76%],
-  [8], [1.4303], [49.92%], [1.4304], [49.92%],
-  [9], [1.4020], [50.80%], [1.4021], [50.78%],
-  [10], [1.3830], [51.90%], [1.3830], [51.91%],
-), caption: [Jetson Orin test-set learning curve for the original FC head and the FC-as-Conv2D head])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (center, right, right, right, right),
+    [*Epoch*],
+    [*Original FC test loss*],
+    [*Original FC test acc.*],
+    [*FC-as-Conv2D test loss*],
+    [*FC-as-Conv2D test acc.*],
 
-#figure(table(
-  columns: (auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right),
-  [*Final Jetson Orin metric*], [*Original FC*], [*FC-as-Conv2D*], [*Difference*],
-  [Train loss], [1.3789], [1.3789], [0.0000],
-  [Train accuracy], [52.31%], [52.30%], [-0.01 pp],
-  [Test loss], [1.3830], [1.3830], [0.0000],
-  [Test accuracy], [51.90%], [51.91%], [+0.01 pp],
-  [Used training batches], [3125/3125], [3125/3125], [same],
-  [Used test batches], [625/625], [625/625], [same],
-), caption: [Final Jetson Orin accuracy and loss])
+    [1], [1.9338], [32.82%], [1.9339], [32.81%],
+    [2], [1.8185], [36.27%], [1.8185], [36.29%],
+    [3], [1.7198], [40.99%], [1.7198], [40.98%],
+    [4], [1.6474], [42.96%], [1.6475], [42.95%],
+    [5], [1.5715], [45.72%], [1.5716], [45.72%],
+    [6], [1.5087], [48.09%], [1.5087], [48.07%],
+    [7], [1.4720], [48.76%], [1.4721], [48.76%],
+    [8], [1.4303], [49.92%], [1.4304], [49.92%],
+    [9], [1.4020], [50.80%], [1.4021], [50.78%],
+    [10], [1.3830], [51.90%], [1.3830], [51.91%],
+  ),
+  caption: [Jetson Orin test-set learning curve for the original FC head and the FC-as-Conv2D head],
+)
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right),
+    [*Final Jetson Orin metric*],
+    [*Original FC*],
+    [*FC-as-Conv2D*],
+    [*Difference*],
+
+    [Train loss], [1.3789], [1.3789], [0.0000],
+    [Train accuracy], [52.31%], [52.30%], [-0.01 pp],
+    [Test loss], [1.3830], [1.3830], [0.0000],
+    [Test accuracy], [51.90%], [51.91%], [+0.01 pp],
+    [Used training batches], [3125/3125], [3125/3125], [same],
+    [Used test batches], [625/625], [625/625], [same],
+  ),
+  caption: [Final Jetson Orin accuracy and loss],
+)
 
 The Jetson Orin result is still consistent with the rest of the report: the shallow model learns, but accuracy remains limited primarily by representation capacity, training choices and the minimal preprocessing/augmentation pipeline.
 
@@ -993,36 +1058,58 @@ The Jetson Orin result is still consistent with the rest of the report: the shal
 
 The original dense-head run has a mean logged training forward time of 22.845 ms and a mean logged test forward time of 22.865 ms. The FC-as-Conv2D run has a mean logged training forward time of 10.062 ms and a mean logged test forward time of 10.077 ms. Because the backward path is intentionally unchanged, the mean logged training backward time remains essentially the same: 24.862 ms for the original run and 24.852 ms for the FC-as-Conv2D run.
 
-#figure(table(
-  columns: (auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right),
-  [*Jetson Orin timing metric*], [*Original FC*], [*FC-as-Conv2D*], [*Speedup*],
-  [Mean train forward], [22.845 ms], [10.062 ms], [2.27×],
-  [Mean test forward], [22.865 ms], [10.077 ms], [2.27×],
-  [Mean train classifier head], [13.490 ms], [0.718 ms], [18.80×],
-  [Mean test classifier head], [13.490 ms], [0.718 ms], [18.80×],
-  [Mean train backward], [24.862 ms], [24.852 ms], [1.00×],
-  [Mean logged train forward + backward], [47.707 ms], [34.914 ms], [1.37×],
-), caption: [Jetson Orin CUDA-event timing comparison])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right),
+    [*Jetson Orin timing metric*],
+    [*Original FC*],
+    [*FC-as-Conv2D*],
+    [*Speedup*],
+
+    [Mean train forward], [22.845 ms], [10.062 ms], [2.27×],
+    [Mean test forward], [22.865 ms], [10.077 ms], [2.27×],
+    [Mean train classifier head],
+    [13.490 ms],
+    [0.718 ms],
+    [18.80×],
+
+    [Mean test classifier head],
+    [13.490 ms],
+    [0.718 ms],
+    [18.80×],
+
+    [Mean train backward], [24.862 ms], [24.852 ms], [1.00×],
+    [Mean logged train forward + backward],
+    [47.707 ms],
+    [34.914 ms],
+    [1.37×],
+  ),
+  caption: [Jetson Orin CUDA-event timing comparison],
+)
 
 On the Jetson Orin run, the dense classifier is still the largest component of the original forward pass, but it accounts for 59.05% of mean logged training forward time. After the FC-as-Conv2D rewrite, the classifier head falls to 0.718 ms and convolution becomes the dominant forward component.
 
-#figure(table(
-  columns: (auto, auto, auto, auto, auto),
-  inset: 4pt,
-  align: (left, right, right, right, right),
-  [*Forward component*],
-  [*Original FC train mean ms*],
-  [*Original FC train share*],
-  [*FC-as-Conv2D train mean ms*],
-  [*FC-as-Conv2D train share*],
-  [Conv], [8.934], [39.11%], [8.929], [88.74%],
-  [ReLU], [0.128], [0.56%], [0.129], [1.28%],
-  [Max pool], [0.217], [0.95%], [0.214], [2.13%],
-  [Classifier head], [13.490], [59.05%], [0.718], [7.13%],
-  [Softmax + prediction], [0.076], [0.33%], [0.072], [0.72%],
-), caption: [Jetson Orin training forward-pass component breakdown])
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right, right),
+    [*Forward component*],
+    [*Original FC train mean ms*],
+    [*Original FC train share*],
+    [*FC-as-Conv2D train mean ms*],
+    [*FC-as-Conv2D train share*],
+
+    [Conv], [8.934], [39.11%], [8.929], [88.74%],
+    [ReLU], [0.128], [0.56%], [0.129], [1.28%],
+    [Max pool], [0.217], [0.95%], [0.214], [2.13%],
+    [Classifier head], [13.490], [59.05%], [0.718], [7.13%],
+    [Softmax + prediction], [0.076], [0.33%], [0.072], [0.72%],
+  ),
+  caption: [Jetson Orin training forward-pass component breakdown],
+)
 
 The classifier-head speedup is large, but the full forward-pass speedup is limited to about 2.27× because both versions still spend about 8.93 ms in the first convolution. The full logged training-compute speedup is smaller again, about 1.37×, because the FCN executable still uses the original dense-FC backward/update path. Therefore, on Jetson Orin the FC-as-Conv2D rewrite is valuable mainly for inference-like forward execution and for diagnosing the original dense-head bottleneck; it does not yet optimize the convolution kernel or the backward pass.
 
