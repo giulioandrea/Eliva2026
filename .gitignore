@@ -1,5 +1,4 @@
-*.jpg
-*.png
+dataset/*
 *.pdf
 kaggle.json
 cifar10_raw
