@@ -1,6 +1,6 @@
 NVCC = nvcc
 CC   = gcc
-CXX  = g++
+CXX  = g++-15
 
 SRC_DIR = src
 OBJ_DIR = build

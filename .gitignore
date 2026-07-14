@@ -2,6 +2,6 @@
 *.png
 *.pdf
 kaggle.json
-cifar10_raw
+dataset*/
 bin/
 build/

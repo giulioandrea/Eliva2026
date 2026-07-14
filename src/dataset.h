@@ -1,48 +1,35 @@
 #ifndef DATASET_H
 #define DATASET_H
 
-#define NUM_CLASSES    10
-#define IMAGE_WIDTH    32
-#define IMAGE_HEIGHT   32
+#define NUM_DATA_BATCHES 5
+#define NUM_TEST_BATCHES 1
+#define NUM_BATCHES (NUM_DATA_BATCHES + NUM_TEST_BATCHES)
+#define BATCH_EXPECTED_SIZE 30730000
+#define IMAGES_PER_BATCH 10000
+
+#define NUM_CLASSES 10
+#define NUM_IMAGES (IMAGES_PER_BATCH * NUM_BATCHES)
+
+#define IMAGE_WIDTH 32
+#define IMAGE_HEIGHT 32
 #define IMAGE_CHANNELS 3
 
-typedef struct 
-{
-    char *path;
-    int label;
-} Sample;
+#define IMAGE_LABEL_BYTES 1
+#define IMAGE_COLOR_BYTES (IMAGE_WIDTH * IMAGE_HEIGHT * IMAGE_CHANNELS)
+#define IMAGE_TOTAL_BYTES (IMAGE_LABEL_BYTES + IMAGE_COLOR_BYTES)
 
-typedef struct
-{
-    Sample *samples;
-    int count;
-    int capacity;
+typedef struct {
+	char **classes;
+	uint8_t **data;
 } Dataset;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+Dataset dataset_init(const char *path);
 
-// Deferred to read_dataset.o linking
-extern const char *CIFAR_CLASS_NAMES[NUM_CLASSES];
+void dataset_free(Dataset dataset);
 
-int load_dataset_index(Dataset *dataset, const char *root_dir);
+void dataset_print_info(const Dataset dataset);
 
-int load_batch(
-    const Dataset *dataset, int start_index, int batch_size, 
-    float *images, int *labels
-);
-
-void free_dataset(Dataset *dataset);
-
-// Shuffle dataset samples in-place using Fisher-Yates algorithm.
-// Requires a call to srand()
-void shuffle_dataset(Dataset *dataset);
-
-void print_dataset_info(const Dataset *dataset);
-
-#ifdef __cplusplus
-}
-#endif
+int dataset_read_images(const Dataset dataset, int start_index, int batch_size, float *images,
+						int *labels);
 
 #endif
