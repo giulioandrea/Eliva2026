@@ -1,6 +1,7 @@
+#include <assert.h>
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <cuda_runtime.h>
 
 #include "dataset.h"
 #include "kernels.h"
@@ -27,9 +28,9 @@ static void print_forward_timing(const char *phase, int epoch, int batch, const 
 	float total = t[0] + t[1] + t[2] + t[3] + t[4];
 
 	printf("Timing | %s | Epoch %d | Batch %d | "
-	       "Forward %.3f ms | Conv %.3f | ReLU %.3f | Pool %.3f | "
-	       "FC+Bias %.3f | Softmax+Pred %.3f\n",
-	       phase, epoch, batch, total, t[0], t[1], t[2], t[3], t[4]);
+		   "Forward %.3f ms | Conv %.3f | ReLU %.3f | Pool %.3f | "
+		   "FC+Bias %.3f | Softmax+Pred %.3f\n",
+		   phase, epoch, batch, total, t[0], t[1], t[2], t[3], t[4]);
 	fflush(stdout);
 }
 
@@ -59,50 +60,15 @@ int main(int argc, char **argv) {
 	// unsigned int seed = (*(unsigned int *)buffer);
 	unsigned int seed = FIXED_SEED;
 
-	const char *datasetRoot = (argc > 1) ? argv[1] : "dataset";
+	const char *dataset_root = (argc > 1) ? argv[1] : "./dataset_bin";
+	dataset_t dataset = dataset_init(dataset_root);
 
-	char trainPath[4096];
-	char testPath[4096];
+	dataset_print_info(dataset);
 
-	snprintf(trainPath, sizeof(trainPath), "%s/train", datasetRoot);
-	snprintf(testPath, sizeof(testPath), "%s/test", datasetRoot);
+	int trainBatches = dataset.train_data.num_images / BATCH_SIZE;
+	int testBatches = dataset.test_data.num_images / BATCH_SIZE;
 
-	Dataset train;
-	Dataset test;
-
-	if (!load_dataset_index(&train, trainPath)) {
-		fprintf(stderr, "Failed to load training dataset from '%s'.\n", trainPath);
-		return EXIT_FAILURE;
-	}
-
-	if (!load_dataset_index(&test, testPath)) {
-		fprintf(stderr, "Failed to load test dataset from '%s'.\n", testPath);
-		free_dataset(&train);
-		return EXIT_FAILURE;
-	}
-
-	printf("\nTRAIN DATASET\n");
-	print_dataset_info(&train);
-
-	printf("\nTEST DATASET\n");
-	print_dataset_info(&test);
-
-	int trainBatches = train.count / BATCH_SIZE;
-	int testBatches = test.count / BATCH_SIZE;
-
-	if (trainBatches <= 0) {
-		fprintf(stderr, "Training dataset too small for BATCH_SIZE=%d.\n", BATCH_SIZE);
-		free_dataset(&train);
-		free_dataset(&test);
-		return EXIT_FAILURE;
-	}
-
-	if (testBatches <= 0) {
-		fprintf(stderr, "Test dataset too small for BATCH_SIZE=%d.\n", BATCH_SIZE);
-		free_dataset(&train);
-		free_dataset(&test);
-		return EXIT_FAILURE;
-	}
+	assert(trainBatches > 0 && testBatches > 0);
 
 	printf("\nNetwork configuration:\n");
 	printf("Input:        %d x %d x %d\n", INPUT_CHANNELS, INPUT_H, INPUT_W);
@@ -126,8 +92,7 @@ int main(int argc, char **argv) {
 		free(h_predictions);
 		free(h_loss);
 
-		free_dataset(&train);
-		free_dataset(&test);
+		dataset_free(dataset);
 
 		return EXIT_FAILURE;
 	}
@@ -151,26 +116,22 @@ int main(int argc, char **argv) {
 	const float lambda = 1e-4f;
 
 	for (int epoch = 0; epoch < EPOCHS; epoch++) {
-		shuffle_dataset(&train);
-
 		float trainLossSum = 0.0f;
 		float trainAccuracySum = 0.0f;
 		int usedTrainBatches = 0;
 
 		for (int batch = 0; batch < trainBatches; batch++) {
-			int startIndex = batch * BATCH_SIZE;
-
-			int loaded = load_batch(&train, startIndex, BATCH_SIZE, h_input, h_labels);
+			int loaded = dataset_read_images(dataset.train_data, BATCH_SIZE, h_input, h_labels);
 
 			if (loaded != BATCH_SIZE) {
 				continue;
 			}
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_input, h_input, (size_t)inputElements * sizeof(float),
-			                            cudaMemcpyHostToDevice));
+										cudaMemcpyHostToDevice));
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
-			                            cudaMemcpyHostToDevice));
+										cudaMemcpyHostToDevice));
 
 			int printBatch = should_print_batch(batch, trainBatches);
 			int collectTiming = should_collect_timing(batch, trainBatches);
@@ -185,7 +146,8 @@ int main(int argc, char **argv) {
 				LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
 				CHECK_CUDA_ERROR(cudaEventRecord(backwardStop, 0));
 				CHECK_CUDA_ERROR(cudaEventSynchronize(backwardStop));
-				CHECK_CUDA_ERROR(cudaEventElapsedTime(&backwardTiming, backwardStart, backwardStop));
+				CHECK_CUDA_ERROR(
+					cudaEventElapsedTime(&backwardTiming, backwardStart, backwardStop));
 			} else {
 				LeNet_backward(d_input, d_labels, cnn, learningRate, lambda, NULL);
 			}
@@ -194,7 +156,7 @@ int main(int argc, char **argv) {
 				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
 			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
-			                            (size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
+										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
 
@@ -203,8 +165,8 @@ int main(int argc, char **argv) {
 			usedTrainBatches++;
 
 			if (printBatch) {
-				printf("Epoch %d/%d | Batch %d/%d | Train loss %.4f | Train acc %.4f\n",
-				       epoch + 1, EPOCHS, batch + 1, trainBatches, batchLoss, batchAccuracy);
+				printf("Epoch %d/%d | Batch %d/%d | Train loss %.4f | Train acc %.4f\n", epoch + 1,
+					   EPOCHS, batch + 1, trainBatches, batchLoss, batchAccuracy);
 
 				if (collectTiming) {
 					print_forward_timing("Train", epoch + 1, batch + 1, forwardTiming);
@@ -228,17 +190,18 @@ int main(int argc, char **argv) {
 		for (int batch = 0; batch < testBatches; batch++) {
 			int startIndex = batch * BATCH_SIZE;
 
-			int loaded = load_batch(&test, startIndex, BATCH_SIZE, h_input, h_labels);
+			// FIXME: THE READ SHOULD START FROM A START INDEX, INSTEAD OF RANDOM INDICES
+			int loaded = dataset_read_images(dataset.test_data, BATCH_SIZE, h_input, h_labels);
 
 			if (loaded != BATCH_SIZE) {
 				continue;
 			}
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_input, h_input, (size_t)inputElements * sizeof(float),
-			                            cudaMemcpyHostToDevice));
+										cudaMemcpyHostToDevice));
 
 			CHECK_CUDA_ERROR(cudaMemcpy(d_labels, h_labels, (size_t)BATCH_SIZE * sizeof(int),
-			                            cudaMemcpyHostToDevice));
+										cudaMemcpyHostToDevice));
 
 			int printBatch = should_print_batch(batch, testBatches);
 			int collectTiming = should_collect_timing(batch, testBatches);
@@ -251,7 +214,7 @@ int main(int argc, char **argv) {
 				compute_batch_loss(cnn->d_softmax_output, d_labels, d_loss, h_loss, BATCH_SIZE);
 
 			CHECK_CUDA_ERROR(cudaMemcpy(h_predictions, cnn->d_predictions,
-			                            (size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
+										(size_t)BATCH_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
 
 			float batchAccuracy = calculateAccuracy(h_predictions, h_labels, BATCH_SIZE);
 
@@ -260,8 +223,8 @@ int main(int argc, char **argv) {
 			usedTestBatches++;
 
 			if (printBatch) {
-				printf("Epoch %d/%d | Batch %d/%d | Test loss %.4f | Test acc %.4f\n",
-				       epoch + 1, EPOCHS, batch + 1, testBatches, batchLoss, batchAccuracy);
+				printf("Epoch %d/%d | Batch %d/%d | Test loss %.4f | Test acc %.4f\n", epoch + 1,
+					   EPOCHS, batch + 1, testBatches, batchLoss, batchAccuracy);
 
 				if (collectTiming) {
 					print_forward_timing("Test", epoch + 1, batch + 1, forwardTiming);
@@ -278,10 +241,10 @@ int main(int argc, char **argv) {
 		}
 
 		printf("\nEpoch %d/%d completed | "
-		       "Train loss %.4f | Train acc %.4f | Used train batches %d/%d | "
-		       "Test loss %.4f | Test acc %.4f | Used test batches %d/%d\n\n",
-		       epoch + 1, EPOCHS, avgTrainLoss, avgTrainAccuracy, usedTrainBatches, trainBatches,
-		       avgTestLoss, avgTestAccuracy, usedTestBatches, testBatches);
+			   "Train loss %.4f | Train acc %.4f | Used train batches %d/%d | "
+			   "Test loss %.4f | Test acc %.4f | Used test batches %d/%d\n\n",
+			   epoch + 1, EPOCHS, avgTrainLoss, avgTrainAccuracy, usedTrainBatches, trainBatches,
+			   avgTestLoss, avgTestAccuracy, usedTestBatches, testBatches);
 	}
 
 	CHECK_CUDA_ERROR(cudaEventDestroy(backwardStart));
@@ -298,8 +261,6 @@ int main(int argc, char **argv) {
 
 	LeNet_free(cnn);
 
-	free_dataset(&train);
-	free_dataset(&test);
-
+	dataset_free(dataset);
 	return EXIT_SUCCESS;
 }

@@ -11,29 +11,33 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#define STR_BUF_SIZE ((size_t)1000)
 
-static const int STR_SIZE = 1000;
-static char str_buf[STR_SIZE] = {0};
+static char **dataset_load_classes(FILE *file, int num_classes, char *str_buf) {
+	assert(file != NULL && str_buf != NULL && num_classes > 0);
 
-static char **dataset_load_classes(FILE *file) {
-	char **class_names = (char **)malloc(sizeof(char *) * NUM_CLASSES);
+	char **class_names = (char **)malloc(sizeof(char *) * num_classes);
 	assert(class_names != NULL);
 
-	for (int i = 0; i < NUM_CLASSES; i++) {
-		fgets(str_buf, STR_SIZE, file);
-		char *class_name = (char *)malloc(strlen(str_buf) * sizeof(char));
+	for (int i = 0; i < num_classes; i++) {
+		fgets(str_buf, STR_BUF_SIZE, file);
+		size_t str_len = strlen(str_buf);
+		assert(str_len > 0 && str_len < STR_BUF_SIZE);
+
+		// remove the trailing \n
+		str_buf[str_len - 1] = '\0';
+
+		char *class_name = (char *)malloc(str_len * sizeof(char));
 		assert(class_names != NULL);
 
-		strncpy(class_name, str_buf, STR_SIZE);
+		strcpy(class_name, str_buf);
 		class_names[i] = class_name;
 	}
 
 	return class_names;
 }
 
-static uint8_t *dataset_load_file(const char *path) {
+static uint8_t *dataset_load_file(const char *path, size_t batch_expected_bytes) {
 	FILE *data_file = fopen(path, "r");
 	assert(data_file != NULL);
 
@@ -43,62 +47,89 @@ static uint8_t *dataset_load_file(const char *path) {
 	fstat(fd, &st);
 	size_t len = st.st_size;
 
-	assert(len == BATCH_EXPECTED_SIZE);
+	assert(len == batch_expected_bytes);
 
 	uint8_t *addr = (uint8_t *)mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
-	assert(addr != MAP_FAILED);
+	assert(addr != MAP_FAILED && addr != NULL);
 
 	fclose(data_file);
 	return addr;
 }
 
-static uint8_t **dataset_load_files(const char *path) {
-	uint8_t **data = (uint8_t **)malloc(NUM_BATCHES * sizeof(char *));
-	assert(data != NULL);
+static void dataset_load_files(const char *path, int num_train_batches, int num_test_batches,
+							   int images_per_batch, size_t batch_expected_bytes,
+							   data_holder_t *train_out, data_holder_t *test_out, char *str_buf) {
+	assert(path != NULL && train_out != NULL && test_out != NULL);
+	assert(num_train_batches > 0 && num_test_batches > 0);
+
+	uint8_t **train_data = (uint8_t **)malloc(num_train_batches * sizeof(uint8_t *));
+	uint8_t **test_data = (uint8_t **)malloc(num_test_batches * sizeof(uint8_t *));
+
+	assert(train_data != NULL && test_data != NULL);
 
 	// load the train batches
-	for (int i = 0; i < NUM_DATA_BATCHES; i++) {
-		snprintf(str_buf, STR_SIZE, "%s/%s%d.bin", path, "data_batch_", i);
-		data[i] = dataset_load_file(str_buf);
+	for (int i = 0; i < num_train_batches; i++) {
+		snprintf(str_buf, STR_BUF_SIZE, "%s/%s%d.bin", path, "data_batch_", i + 1);
+		train_data[i] = dataset_load_file(str_buf, batch_expected_bytes);
 	}
+	*train_out =
+		(data_holder_t){num_train_batches, images_per_batch, num_train_batches * images_per_batch,
+						batch_expected_bytes, train_data};
 
 	// load the test batch
-	snprintf(str_buf, STR_SIZE, "%s/%s.bin", path, "test_batch");
-	data[NUM_DATA_BATCHES] = dataset_load_file(str_buf);
-
-	return data;
+	if (num_test_batches == 1) {
+		snprintf(str_buf, STR_BUF_SIZE, "%s/%s.bin", path, "test_batch");
+		test_data[0] = dataset_load_file(str_buf, batch_expected_bytes);
+	} else {
+		for (int i = 0; i < num_test_batches; i++) {
+			snprintf(str_buf, STR_BUF_SIZE, "%s/%s%d.bin", path, "test_batch_", i);
+			test_data[i] = dataset_load_file(str_buf, batch_expected_bytes);
+		}
+	}
+	*test_out =
+		(data_holder_t){num_test_batches, images_per_batch, num_test_batches * images_per_batch,
+						batch_expected_bytes, test_data};
 }
 
-Dataset dataset_init(const char *path) {
-	const int STR_SIZE = 1000;
-	char str_buf[STR_SIZE] = {0};
+dataset_t dataset_init(const char *path) {
+	char str_buf[STR_BUF_SIZE] = {0};
 
 	// path to the batches.meta.txt file
-	snprintf(str_buf, STR_SIZE, "%s/%s", path, "batches.meta.txt");
+	snprintf(str_buf, STR_BUF_SIZE, "%s/%s", path, "batches.meta.txt");
 	FILE *classes_file = fopen(str_buf, "r");
-	assert(classes_file == NULL);
+	assert(classes_file != NULL);
 
-	char **class_names = dataset_load_classes(classes_file);
+	char **class_names = dataset_load_classes(classes_file, NUM_CLASSES, str_buf);
 	fclose(classes_file);
 
-	uint8_t **data = dataset_load_files(path);
+	data_holder_t train;
+	data_holder_t test;
+	dataset_load_files(path, NUM_TRAIN_BATCHES, NUM_TEST_BATCHES, IMAGES_PER_BATCH,
+					   BATCH_EXPECTED_BYTES, &train, &test, str_buf);
 
-	Dataset dataset = {class_names, data};
+	dataset_t dataset = {NUM_CLASSES, class_names, train, test};
 	return dataset;
 }
 
-void dataset_free(const Dataset dataset) {
-	for (int i = 0; i < NUM_CLASSES; i++) {
+void dataset_free(const dataset_t dataset) {
+	for (int i = 0; i < dataset.num_classes; i++) {
 		free(dataset.classes[i]);
 	}
 	free(dataset.classes);
 
-	for (int i = 0; i < NUM_BATCHES; i++) {
-		if (munmap(dataset.data[i], BATCH_EXPECTED_SIZE) == -1) {
-			fprintf(stderr, "Error unmapping batch %d", i);
+	for (int i = 0; i < dataset.train_data.num_batches; i++) {
+		if (munmap(dataset.train_data.data[i], dataset.train_data.batch_bytes) == -1) {
+			fprintf(stderr, "Error unmapping train batch %d", i);
 		}
 	}
-	free(dataset.data);
+	free(dataset.train_data.data);
+
+	for (int i = 0; i < dataset.test_data.num_batches; i++) {
+		if (munmap(dataset.test_data.data[i], dataset.test_data.batch_bytes) == -1) {
+			fprintf(stderr, "Error unmapping test batch %d", i);
+		}
+	}
+	free(dataset.test_data.data);
 }
 
 // Bilinear resizing and normalization to RGB [0,1] in NCHW format
@@ -185,20 +216,17 @@ static void dataset_rand_indices(int indices_size, int batch_size, int *output) 
 	}
 }
 
-static void dataset_read_image(const Dataset dataset, int index, uint8_t **img_inout,
+static void dataset_read_image(const data_holder_t data, int index, uint8_t **img_inout,
 							   int *label_inout) {
-	if (index < 0 || index >= NUM_IMAGES) {
-		*label_inout = -1;
-		return;
-	}
+	assert(index >= 0 && index < data.num_images);
 
-	int batch_idx = index / IMAGES_PER_BATCH;
-	int local_idx = index % IMAGES_PER_BATCH;
+	int batch_idx = index / data.images_per_batch;
+	int local_idx = index % data.images_per_batch;
 
-	assert(batch_idx >= 0 && batch_idx <= NUM_BATCHES);
-	assert(local_idx >= 0 && local_idx <= IMAGES_PER_BATCH);
+	assert(batch_idx >= 0 && batch_idx <= data.num_batches);
+	assert(local_idx >= 0 && local_idx <= data.images_per_batch);
 
-	uint8_t *raw = dataset.data[batch_idx] + (local_idx * IMAGE_TOTAL_BYTES);
+	uint8_t *raw = data.data[batch_idx] + (local_idx * IMAGE_TOTAL_BYTES);
 	int label = (int)*raw;
 
 	assert(label >= 0 && label <= NUM_CLASSES);
@@ -207,13 +235,14 @@ static void dataset_read_image(const Dataset dataset, int index, uint8_t **img_i
 	*img_inout = raw + 1;
 }
 
-int dataset_read_images(const Dataset dataset, int batch_size, float *images, int *labels) {
+int dataset_read_images(const data_holder_t data_holder, int batch_size, float *images,
+						int *labels) {
 	if (!images || !labels) {
 		fprintf(stderr, "Error: NULL pointer passed to load_batch.\n");
 		return -1;
 	}
 
-	if (batch_size < 0 || batch_size >= NUM_IMAGES) {
+	if (batch_size < 0 || batch_size >= data_holder.num_images) {
 		fprintf(stderr, "Error: batch_size out of bounds.\n");
 		return -1;
 	}
@@ -221,12 +250,12 @@ int dataset_read_images(const Dataset dataset, int batch_size, float *images, in
 	// INFO: if the batch size is small, it would be more efficient to allocate the array on the
 	// stack
 	int *shuffled_batch = (int *)malloc(sizeof(int) * batch_size);
-	dataset_rand_indices(NUM_IMAGES, batch_size, shuffled_batch);
+	dataset_rand_indices(data_holder.num_images, batch_size, shuffled_batch);
 
 	for (int i = 0; i < batch_size; i++) {
 		int img_index = i * IMAGE_COLOR_BYTES;
 		uint8_t *raw_img_out;
-		dataset_read_image(dataset, shuffled_batch[i], &raw_img_out, labels + i);
+		dataset_read_image(data_holder, shuffled_batch[i], &raw_img_out, labels + i);
 
 		// INFO: this could be moved in the memory mapping, to avoid computing the interpolation
 		// each time O(n^3)
@@ -235,22 +264,49 @@ int dataset_read_images(const Dataset dataset, int batch_size, float *images, in
 
 	free(shuffled_batch);
 
-	return 0;
+	return batch_size;
 }
 
-void dataset_print_info(const Dataset dataset) {
-	int counts[NUM_CLASSES] = {0};
+void dataset_print_info(const dataset_t dataset) {
+	int counts[dataset.num_classes];
+	// clear the counter
+	for (int i = 0; i < dataset.num_classes; i++) {
+		counts[i] = 0;
+	}
 
-	for (int i = 0; i < NUM_IMAGES; i++) {
+	// print the train dataset
+	printf("\nTRAIN DATASET\n");
+	data_holder_t train = dataset.train_data;
+	for (int i = 0; i < train.num_images; i++) {
 		uint8_t *img;
 		int label;
-		dataset_read_image(dataset, i, &img, &label);
+		dataset_read_image(train, i, &img, &label);
 
-		if (label >= 0 && label < NUM_CLASSES)
+		if (label >= 0 && label < dataset.num_classes)
 			counts[label]++;
 	}
 
-	printf("Dataset contains %d samples:\n", NUM_IMAGES);
-	for (int i = 0; i < NUM_CLASSES; i++)
+	printf("Dataset contains %d samples:\n", train.num_images);
+	for (int i = 0; i < dataset.num_classes; i++) {
+		printf("Class %2d (%s): %d samples\n", i, dataset.classes[i], counts[i]);
+
+		// clear the counter after use
+		counts[i] = 0;
+	}
+
+	// print the test dataset
+	printf("\nTEST DATASET\n");
+	data_holder_t test = dataset.test_data;
+	for (int i = 0; i < test.num_images; i++) {
+		uint8_t *img;
+		int label;
+		dataset_read_image(test, i, &img, &label);
+
+		if (label >= 0 && label < dataset.num_classes)
+			counts[label]++;
+	}
+
+	printf("Dataset contains %d samples:\n", test.num_images);
+	for (int i = 0; i < dataset.num_classes; i++)
 		printf("Class %2d (%s): %d samples\n", i, dataset.classes[i], counts[i]);
 }
